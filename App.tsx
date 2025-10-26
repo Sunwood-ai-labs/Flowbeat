@@ -12,6 +12,7 @@ import { Track } from './types';
 import { Card, CardContent } from './components/ui/Card';
 import PromptSettings from './components/PromptSettings';
 import TransitionTimeline from './components/TransitionTimeline';
+import { cacheMixPoints, getCachedMixPoints } from './lib/analysisCache';
 
 const DEFAULT_GEMINI_PROMPT_NOTES = `Prioritize quick transitions. Prefer start points that jump into the main groove within 15 seconds and fade-outs that begin no later than 15 seconds before the end.`;
 
@@ -72,28 +73,57 @@ function App() {
   useEffect(() => {
     tracks.forEach(track => {
       if (track.analysisStatus === 'pending' && mixer.audioContext) {
-        
+
         setTracks(prev => prev.map(t => t.id === track.id ? { ...t, analysisStatus: 'analyzing' } : t));
 
         const analyze = async () => {
             try {
                 const audioAnalysis = await analyzeAudioFile(track.file, mixer.audioContext!);
-                
-                toast.promise(
-                    getMixPointsFromGemini(track.name, audioAnalysis.duration!, geminiPromptNotes),
+                const resolvedDuration = audioAnalysis.duration ?? track.duration;
+
+                if (!resolvedDuration || !Number.isFinite(resolvedDuration)) {
+                    throw new Error('Could not determine track duration for analysis.');
+                }
+
+                const cachedMix = getCachedMixPoints({
+                    file: track.file,
+                    prompt: geminiPromptNotes,
+                    duration: resolvedDuration,
+                });
+
+                if (cachedMix) {
+                    setTracks(prev => prev.map(t => t.id === track.id ? {
+                        ...t,
+                        ...audioAnalysis,
+                        ...cachedMix,
+                        analysisStatus: 'ready'
+                    } : t));
+                    toast.success(`Loaded cached analysis for ${track.name}.`);
+                    return;
+                }
+
+                await toast.promise(
+                    getMixPointsFromGemini(track.name, resolvedDuration, geminiPromptNotes),
                     {
                         loading: `Analyzing ${track.name} with Gemini...`,
                         success: (mixPoints) => {
-                            setTracks(prev => prev.map(t => t.id === track.id ? { 
-                                ...t, 
+                            cacheMixPoints({
+                                file: track.file,
+                                prompt: geminiPromptNotes,
+                                duration: resolvedDuration,
+                                startTime: mixPoints.startTime,
+                                fadeOutTime: mixPoints.fadeOutTime,
+                            });
+                            setTracks(prev => prev.map(t => t.id === track.id ? {
+                                ...t,
                                 ...audioAnalysis,
                                 ...mixPoints,
-                                analysisStatus: 'ready' 
+                                analysisStatus: 'ready'
                             } : t));
                             return `Analysis for ${track.name} complete!`;
                         },
                         error: (err) => {
-                             setTracks(prev => prev.map(t => t.id === track.id ? { ...t, analysisStatus: 'error' } : t));
+                            setTracks(prev => prev.map(t => t.id === track.id ? { ...t, analysisStatus: 'error' } : t));
                             return `Could not analyze ${track.name}: ${err.message}`;
                         }
                     }
@@ -102,7 +132,8 @@ function App() {
             } catch (error) {
                 console.error('Error analyzing file:', track.name, error);
                 setTracks(prev => prev.map(t => t.id === track.id ? { ...t, analysisStatus: 'error' } : t));
-                toast.error(`Failed to process ${track.name}.`);
+                const message = error instanceof Error ? error.message : 'Unknown error occurred.';
+                toast.error(`Failed to process ${track.name}. ${message}`);
             }
         }
         analyze();
