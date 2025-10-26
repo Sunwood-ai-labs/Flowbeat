@@ -10,6 +10,7 @@ interface TrackListProps {
   onLoadToDeckA: (track: Track) => void;
   onLoadToDeckB: (track: Track) => void;
   onRemoveTrack: (trackId: string) => void;
+  onReanalyzeTrack: (trackId: string) => void;
 }
 
 const TrackStatusIndicator: React.FC<{ status: Track['analysisStatus'] }> = ({ status }) => {
@@ -66,7 +67,7 @@ const MixPointVisualization: React.FC<{ track: Track }> = ({ track }) => {
 };
 
 
-const TrackList: React.FC<TrackListProps> = ({ tracks, onLoadToDeckA, onLoadToDeckB, onRemoveTrack }) => {
+const TrackList: React.FC<TrackListProps> = ({ tracks, onLoadToDeckA, onLoadToDeckB, onRemoveTrack, onReanalyzeTrack }) => {
   return (
     <Card>
       <CardHeader>
@@ -92,6 +93,14 @@ const TrackList: React.FC<TrackListProps> = ({ tracks, onLoadToDeckA, onLoadToDe
                   {track.analysisStatus === 'error' && <p className="text-sm text-destructive">Analysis failed</p>}
                 </div>
                 <div className="flex gap-2 flex-shrink-0">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => onReanalyzeTrack(track.id)}
+                    disabled={track.analysisStatus === 'analyzing'}
+                  >
+                    再解析
+                  </Button>
                   <Button variant="outline" size="sm" onClick={() => onLoadToDeckA(track)} disabled={track.analysisStatus !== 'ready'}>
                     Deck A
                   </Button>

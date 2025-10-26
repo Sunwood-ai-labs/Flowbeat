@@ -12,7 +12,7 @@ import { Track } from './types';
 import { Card, CardContent } from './components/ui/Card';
 import PromptSettings from './components/PromptSettings';
 import TransitionTimeline from './components/TransitionTimeline';
-import { cacheMixPoints, getCachedMixPoints } from './lib/analysisCache';
+import { cacheMixPoints, getCachedMixPoints, initializeAnalysisCache, clearCachedMixPointsForTrack } from './lib/analysisCache';
 
 const DEFAULT_GEMINI_PROMPT_NOTES = `Prioritize quick transitions. Prefer start points that jump into the main groove within 15 seconds and fade-outs that begin no later than 15 seconds before the end.`;
 
@@ -53,6 +53,10 @@ function App() {
 
   const mixer = useDjMixer({ isAutoDj, tracks, getNextReadyTrack });
 
+  useEffect(() => {
+    initializeAnalysisCache();
+  }, []);
+
   const handleFilesAdded = useCallback(async (files: FileList) => {
     const newTracks: Track[] = Array.from(files)
         .filter(file => !tracks.some(t => t.id === `${file.name}-${file.lastModified}`))
@@ -69,6 +73,28 @@ function App() {
         setTracks(prev => [...prev, ...newTracks]);
     }
   }, [tracks, mixer.audioContext]);
+
+  const handleReanalyzeTrack = useCallback((trackId: string) => {
+    const target = tracks.find((t) => t.id === trackId);
+    if (!target) {
+      return;
+    }
+
+    clearCachedMixPointsForTrack(target.file, geminiPromptNotes);
+    setTracks((prev) =>
+      prev.map((t) =>
+        t.id === trackId
+          ? {
+              ...t,
+              analysisStatus: 'pending',
+              startTime: undefined,
+              fadeOutTime: undefined,
+            }
+          : t
+      )
+    );
+    toast.success(`再解析を開始しました: ${target.name}`);
+  }, [tracks, geminiPromptNotes]);
 
   useEffect(() => {
     tracks.forEach(track => {
@@ -177,6 +203,10 @@ function App() {
   }, [isAutoDj, orderedReadyTracks, deckATrackId, deckBTrackId, getNextReadyTrack, loadTrack]);
 
   const handleRemoveTrack = (trackId: string) => {
+    const target = tracks.find((t) => t.id === trackId);
+    if (target) {
+      clearCachedMixPointsForTrack(target.file);
+    }
     setTracks(tracks => tracks.filter(t => t.id !== trackId));
     if (mixer.deckA.track?.id === trackId) mixer.loadTrack('A', null);
     if (mixer.deckB.track?.id === trackId) mixer.loadTrack('B', null);
@@ -212,6 +242,7 @@ function App() {
                     onLoadToDeckA={(track) => mixer.loadTrack('A', track)}
                     onLoadToDeckB={(track) => mixer.loadTrack('B', track)}
                     onRemoveTrack={handleRemoveTrack}
+                    onReanalyzeTrack={handleReanalyzeTrack}
                 />
                 <TransitionTimeline
                   queue={orderedReadyTracks}

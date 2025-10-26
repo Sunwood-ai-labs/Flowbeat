@@ -8,10 +8,13 @@ type PromptCacheEntry = {
 type CacheStore = Record<string, Record<string, PromptCacheEntry>>;
 
 const CACHE_STORAGE_KEY = 'flowbeat.mixpoints.cache';
+const ASSET_CACHE_URL = '/assets/mixpoints.json';
 
 const isBrowserEnvironment = (): boolean => typeof window !== 'undefined' && typeof window.localStorage !== 'undefined';
 
 let inMemoryCache: CacheStore | null = null;
+let initialFileLoaded = false;
+let initialFileLoading: Promise<void> | null = null;
 
 const hashString = (value: string): string => {
   let hash = 0;
@@ -27,6 +30,14 @@ const getPromptHash = (prompt: string): string => hashString(prompt.trim());
 const getTrackCacheKey = (file: File): string => {
   const parts = [file.name, file.size.toString(), file.lastModified.toString()];
   return parts.join('::');
+};
+
+const mergeCacheStores = (base: CacheStore, override: CacheStore): CacheStore => {
+  const merged: CacheStore = { ...base };
+  Object.entries(override).forEach(([trackKey, promptEntries]) => {
+    merged[trackKey] = { ...(merged[trackKey] ?? {}), ...promptEntries };
+  });
+  return merged;
 };
 
 const safeParse = (raw: string | null): CacheStore => {
@@ -71,6 +82,40 @@ const writeCache = (cache: CacheStore) => {
   } catch (error) {
     console.warn('Failed to persist mix point cache.', error);
   }
+};
+
+const loadInitialFileCache = async (): Promise<void> => {
+  if (!isBrowserEnvironment() || initialFileLoaded) {
+    return;
+  }
+
+  if (!initialFileLoading) {
+    initialFileLoading = (async () => {
+      try {
+        const response = await fetch(ASSET_CACHE_URL, { cache: 'no-cache' });
+        if (response.ok) {
+          const text = await response.text();
+          const fileCache = safeParse(text);
+          const currentCache = readCache();
+          const merged = mergeCacheStores(fileCache, currentCache);
+          writeCache(merged);
+        } else {
+          console.warn(`Could not load mix point asset cache (${response.status}).`);
+        }
+      } catch (error) {
+        console.warn('Failed to bootstrap mix point cache from asset file.', error);
+      } finally {
+        initialFileLoaded = true;
+        initialFileLoading = null;
+      }
+    })();
+  }
+
+  return initialFileLoading;
+};
+
+export const initializeAnalysisCache = async () => {
+  await loadInitialFileCache();
 };
 
 export const getCachedMixPoints = ({
@@ -132,12 +177,29 @@ export const cacheMixPoints = ({
   writeCache(cache);
 };
 
-export const clearCachedMixPointsForTrack = (file: File) => {
+export const clearCachedMixPointsForTrack = (file: File, prompt?: string) => {
   const cache = { ...readCache() };
   const trackKey = getTrackCacheKey(file);
-  if (cache[trackKey]) {
-    delete cache[trackKey];
-    writeCache(cache);
+  if (!cache[trackKey]) {
+    return;
   }
+
+  if (prompt) {
+    const promptHash = getPromptHash(prompt);
+    if (cache[trackKey][promptHash]) {
+      const { [promptHash]: _removed, ...rest } = cache[trackKey];
+      if (Object.keys(rest).length === 0) {
+        delete cache[trackKey];
+      } else {
+        cache[trackKey] = rest;
+      }
+      writeCache(cache);
+    }
+    return;
+  }
+
+  delete cache[trackKey];
+  writeCache(cache);
 };
 
+export const getCacheSnapshot = (): CacheStore => ({ ...readCache() });
