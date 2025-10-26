@@ -10,10 +10,14 @@ import { analyzeAudioFile } from './lib/audioAnalysis';
 import { getMixPointsFromGemini } from './lib/geminiAnalysis';
 import { Track } from './types';
 import { Card, CardContent } from './components/ui/Card';
+import PromptSettings from './components/PromptSettings';
+
+const DEFAULT_GEMINI_PROMPT_NOTES = `Prioritize quick transitions. Prefer start points that jump into the main groove within 15 seconds and fade-outs that begin no later than 15 seconds before the end.`;
 
 function App() {
   const [tracks, setTracks] = useState<Track[]>([]);
   const [isAutoDj, setIsAutoDj] = useState(false);
+  const [geminiPromptNotes, setGeminiPromptNotes] = useState(DEFAULT_GEMINI_PROMPT_NOTES);
   const mixer = useDjMixer({ isAutoDj, tracks });
 
   const handleFilesAdded = useCallback(async (files: FileList) => {
@@ -44,7 +48,7 @@ function App() {
                 const audioAnalysis = await analyzeAudioFile(track.file, mixer.audioContext!);
                 
                 toast.promise(
-                    getMixPointsFromGemini(track.name, audioAnalysis.duration!),
+                    getMixPointsFromGemini(track.name, audioAnalysis.duration!, geminiPromptNotes),
                     {
                         loading: `Analyzing ${track.name} with Gemini...`,
                         success: (mixPoints) => {
@@ -72,7 +76,7 @@ function App() {
         analyze();
       }
     });
-  }, [tracks, mixer.audioContext]);
+  }, [tracks, mixer.audioContext, geminiPromptNotes]);
 
   const handleRemoveTrack = (trackId: string) => {
     setTracks(tracks => tracks.filter(t => t.id !== trackId));
@@ -96,12 +100,13 @@ function App() {
           <Visualizer analyserNode={mixer.masterAnalyserNode} />
 
           <div className="grid md:grid-cols-3 gap-8">
-            <div className="md:col-span-1">
+            <div className="md:col-span-1 space-y-4">
               <Card>
                   <CardContent className="p-4">
                     <FileUpload onFilesAdded={handleFilesAdded} />
                   </CardContent>
               </Card>
+              <PromptSettings prompt={geminiPromptNotes} onPromptChange={setGeminiPromptNotes} />
             </div>
             <div className="md:col-span-2">
                 <TrackList

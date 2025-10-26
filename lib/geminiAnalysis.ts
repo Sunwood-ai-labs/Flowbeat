@@ -34,9 +34,14 @@ const schema = {
 };
 
 
-export async function getMixPointsFromGemini(trackName: string, duration: number): Promise<{ startTime: number; fadeOutTime: number }> {
-    const prompt = `You are an expert DJ. Analyze the following music track to find the best mix points.
-    
+export async function getMixPointsFromGemini(
+    trackName: string,
+    duration: number,
+    promptAddendum?: string,
+): Promise<{ startTime: number; fadeOutTime: number }> {
+    const trimmedAddendum = promptAddendum?.trim();
+    const basePrompt = `You are an expert DJ. Analyze the following music track to find the best mix points.
+
     Track Name: "${trackName}"
     Total Duration: ${Math.round(duration)} seconds.
 
@@ -49,6 +54,9 @@ export async function getMixPointsFromGemini(trackName: string, duration: number
     - The fadeOutTime must be less than the total duration. A good rule of thumb is that it should be within the last 20% of the track.
 
     Provide the response as a JSON object with the specified schema.`;
+    const prompt = trimmedAddendum
+        ? `${basePrompt}\n\nAdditional DJ preferences:\n${trimmedAddendum}`
+        : basePrompt;
 
     try {
         const client = getAiClient();
