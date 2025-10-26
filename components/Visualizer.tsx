@@ -2,59 +2,74 @@
 import React, { useRef, useEffect } from 'react';
 
 interface VisualizerProps {
-  analyserNode: AnalyserNode;
+  analyserNode: AnalyserNode | null;
+  isPlaying: boolean;
 }
 
-const Visualizer: React.FC<VisualizerProps> = ({ analyserNode }) => {
+const Visualizer: React.FC<VisualizerProps> = ({ analyserNode, isPlaying }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
+    if (!analyserNode || !canvasRef.current || !isPlaying) return;
+
     const canvas = canvasRef.current;
-    if (!canvas) return;
     const canvasCtx = canvas.getContext('2d');
     if (!canvasCtx) return;
 
     const bufferLength = analyserNode.frequencyBinCount;
     const dataArray = new Uint8Array(bufferLength);
+
     let animationFrameId: number;
 
     const draw = () => {
       animationFrameId = requestAnimationFrame(draw);
-      analyserNode.getByteFrequencyData(dataArray);
 
-      const parent = canvas.parentElement;
-      if (parent) {
-          canvas.width = parent.clientWidth;
-          canvas.height = parent.clientHeight;
-      }
-      
-      canvasCtx.clearRect(0, 0, canvas.width, canvas.height);
+      analyserNode.getByteTimeDomainData(dataArray);
 
-      const barWidth = (canvas.width / bufferLength) * 2.5;
+      canvasCtx.fillStyle = 'hsl(222.2 84% 4.9%)'; // background color from tailwind.config
+      canvasCtx.fillRect(0, 0, canvas.width, canvas.height);
+
+      canvasCtx.lineWidth = 2;
+      canvasCtx.strokeStyle = 'hsl(210 40% 98%)'; // primary-foreground
+
+      canvasCtx.beginPath();
+
+      const sliceWidth = (canvas.width * 1.0) / bufferLength;
       let x = 0;
 
       for (let i = 0; i < bufferLength; i++) {
-        const barHeight = dataArray[i];
-        
-        const r = barHeight + (25 * (i/bufferLength));
-        const g = 250 * (i/bufferLength);
-        const b = 50;
-        
-        canvasCtx.fillStyle = `rgb(${r},${g},${b})`;
-        canvasCtx.fillRect(x, canvas.height - barHeight / 2, barWidth, barHeight / 2);
-        
-        x += barWidth + 1;
+        const v = dataArray[i] / 128.0;
+        const y = (v * canvas.height) / 2;
+
+        if (i === 0) {
+          canvasCtx.moveTo(x, y);
+        } else {
+          canvasCtx.lineTo(x, y);
+        }
+
+        x += sliceWidth;
       }
+
+      canvasCtx.lineTo(canvas.width, canvas.height / 2);
+      canvasCtx.stroke();
     };
 
     draw();
 
     return () => {
       cancelAnimationFrame(animationFrameId);
+      // Clear canvas when component unmounts or effect re-runs
+      if (canvasCtx) {
+        canvasCtx.clearRect(0, 0, canvas.width, canvas.height);
+      }
     };
-  }, [analyserNode]);
+  }, [analyserNode, isPlaying]);
 
-  return <canvas ref={canvasRef} className="w-full h-full" />;
+  return (
+    <div className="bg-background rounded-lg border aspect-[4/1] w-full overflow-hidden">
+        <canvas ref={canvasRef} width="1024" height="256" className="w-full h-full" />
+    </div>
+  );
 };
 
 export default Visualizer;

@@ -1,104 +1,95 @@
+
 import React from 'react';
 import { Button } from './ui/Button';
 import { Slider } from './ui/Slider';
 import { Switch } from './ui/Switch';
-import { PlayIcon, PauseIcon, SkipForwardIcon, SkipBackIcon, Volume2Icon, TimerIcon } from './Icons';
+import {
+  PlayIcon,
+  PauseIcon,
+  SkipBackIcon,
+  SkipForwardIcon,
+  Volume2Icon,
+  TimerIcon,
+} from './Icons';
+import { formatDuration } from '../lib/utils';
+import type { Track } from '../types';
 
 interface PlayerControlsProps {
   isPlaying: boolean;
-  onPlayPause: () => void;
-  onNext: () => void;
-  onPrev: () => void;
+  togglePlayPause: () => void;
+  skipForward: () => void;
+  skipBackward: () => void;
   volume: number;
-  onVolumeChange: (value: number) => void;
-  crossfade: number;
-  onCrossfadeChange: (value: number) => void;
-  isControlsDisabled: boolean;
-  isDurationLimited: boolean;
-  onDurationLimitChange: (checked: boolean) => void;
-  playbackDurationLimit: number;
-  onPlaybackDurationLimitChange: (value: number) => void;
-  numberOfTracks: number;
+  setVolume: (volume: number) => void;
+  progress: number;
+  seek: (value: number) => void;
+  isAutoDj: boolean;
+  setIsAutoDj: (value: boolean) => void;
+  currentTrack: Track | null;
 }
 
 const PlayerControls: React.FC<PlayerControlsProps> = ({
   isPlaying,
-  onPlayPause,
-  onNext,
-  onPrev,
+  togglePlayPause,
+  skipForward,
+  skipBackward,
   volume,
-  onVolumeChange,
-  crossfade,
-  onCrossfadeChange,
-  isControlsDisabled,
-  isDurationLimited,
-  onDurationLimitChange,
-  playbackDurationLimit,
-  onPlaybackDurationLimitChange,
-  numberOfTracks,
+  setVolume,
+  progress,
+  seek,
+  isAutoDj,
+  setIsAutoDj,
+  currentTrack,
 }) => {
+  const duration = currentTrack?.duration ?? 0;
+  const currentTime = (progress / 100) * duration;
+
   return (
-    <div className="flex flex-col gap-4 pt-4">
-      <div className="flex justify-center items-center gap-4">
-        {/* FIX: Use numberOfTracks prop instead of undefined 'tracks' variable and correct disabling logic. */}
-        <Button variant="ghost" size="icon" onClick={onPrev} disabled={isControlsDisabled || numberOfTracks < 2}>
-          <SkipBackIcon className="w-6 h-6" />
-        </Button>
-        <Button size="lg" onClick={onPlayPause} disabled={isControlsDisabled}>
-          {isPlaying ? <PauseIcon className="w-8 h-8" /> : <PlayIcon className="w-8 h-8" />}
-        </Button>
-        {/* FIX: Use numberOfTracks prop instead of undefined 'tracks' variable and correct disabling logic. */}
-        <Button variant="ghost" size="icon" onClick={onNext} disabled={isControlsDisabled || numberOfTracks < 2}>
-          <SkipForwardIcon className="w-6 h-6" />
-        </Button>
+    <div className="border-t border-border bg-background p-4 flex flex-col gap-4">
+      <div className="flex items-center gap-4">
+        <span className="text-sm font-mono text-muted-foreground w-12 text-right">
+          {formatDuration(currentTime)}
+        </span>
+        <Slider
+          value={[progress]}
+          onValueChange={(value) => seek(value[0])}
+          max={100}
+          step={0.1}
+          disabled={!currentTrack}
+        />
+        <span className="text-sm font-mono text-muted-foreground w-12">
+          {formatDuration(duration)}
+        </span>
       </div>
-      <div className="space-y-4 pt-4">
-        {/* Volume */}
-        <div className="flex items-center gap-3">
-          <Volume2Icon className="w-5 h-5 text-muted-foreground" />
-          <Slider
-            min={0}
-            max={1}
-            step={0.01}
-            value={[volume]}
-            onValueChange={(value) => onVolumeChange(value[0])}
-          />
+      <div className="flex justify-between items-center">
+        <div className="flex items-center gap-2 w-1/3">
+          <TimerIcon className="w-5 h-5" />
+          <span className="text-sm font-medium">Auto DJ</span>
+          <Switch checked={isAutoDj} onCheckedChange={setIsAutoDj} disabled={!currentTrack} />
         </div>
-        {/* Crossfade */}
-        <div className="flex items-center gap-3">
-          <TimerIcon className="w-5 h-5 text-muted-foreground" />
-          <Slider
-            min={1}
-            max={15}
-            step={1}
-            value={[crossfade]}
-            onValueChange={(value) => onCrossfadeChange(value[0])}
-            disabled={isControlsDisabled}
-          />
-           <span className="text-xs w-12 text-right text-muted-foreground">{crossfade}s</span>
+        <div className="flex items-center gap-4 w-1/3 justify-center">
+          <Button variant="ghost" size="icon" onClick={skipBackward} disabled={!currentTrack}>
+            <SkipBackIcon className="w-6 h-6" />
+          </Button>
+          <Button size="lg" onClick={togglePlayPause} disabled={!currentTrack}>
+            {isPlaying ? (
+              <PauseIcon className="w-6 h-6" />
+            ) : (
+              <PlayIcon className="w-6 h-6" />
+            )}
+          </Button>
+          <Button variant="ghost" size="icon" onClick={skipForward} disabled={!currentTrack}>
+            <SkipForwardIcon className="w-6 h-6" />
+          </Button>
         </div>
-        {/* Duration Limit */}
-        <div className="flex items-center gap-3">
-           <Switch
-              id="duration-limit-switch"
-              checked={isDurationLimited}
-              onCheckedChange={onDurationLimitChange}
-              disabled={isControlsDisabled}
-            />
-          <div className={`flex items-center gap-3 w-full transition-opacity ${isDurationLimited ? 'opacity-100' : 'opacity-50'}`}>
-            <label htmlFor="duration-limit-switch" className="text-sm font-medium whitespace-nowrap">
-                Limit to
-            </label>
-            <Slider
-                min={10}
-                max={60}
-                step={1}
-                value={[playbackDurationLimit]}
-                onValueChange={(value) => onPlaybackDurationLimitChange(value[0])}
-                disabled={!isDurationLimited || isControlsDisabled}
-            />
-            <span className="text-xs w-12 text-right text-muted-foreground">{playbackDurationLimit}s</span>
-          </div>
+        <div className="flex items-center gap-2 w-1/3 justify-end">
+          <Volume2Icon className="w-5 h-5" />
+          <Slider
+            value={[volume * 100]}
+            onValueChange={(value) => setVolume(value[0] / 100)}
+            max={100}
+            className="w-32"
+          />
         </div>
       </div>
     </div>
