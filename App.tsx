@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import { Toaster, toast } from 'react-hot-toast';
 import FileUpload from './components/FileUpload';
 import Header from './components/Header';
@@ -11,6 +11,7 @@ import { getMixPointsFromGemini } from './lib/geminiAnalysis';
 import { Track } from './types';
 import { Card, CardContent } from './components/ui/Card';
 import PromptSettings from './components/PromptSettings';
+import TransitionTimeline from './components/TransitionTimeline';
 
 const DEFAULT_GEMINI_PROMPT_NOTES = `Prioritize quick transitions. Prefer start points that jump into the main groove within 15 seconds and fade-outs that begin no later than 15 seconds before the end.`;
 
@@ -18,7 +19,38 @@ function App() {
   const [tracks, setTracks] = useState<Track[]>([]);
   const [isAutoDj, setIsAutoDj] = useState(false);
   const [geminiPromptNotes, setGeminiPromptNotes] = useState(DEFAULT_GEMINI_PROMPT_NOTES);
-  const mixer = useDjMixer({ isAutoDj, tracks });
+  const getNextReadyTrack = useCallback(
+    (currentTrackId: string | null) => {
+      const readyTracks = tracks.filter((track) => track.analysisStatus === 'ready');
+      if (readyTracks.length === 0) {
+        return null;
+      }
+      if (!currentTrackId) {
+        return readyTracks[0];
+      }
+
+      const currentIndex = readyTracks.findIndex((track) => track.id === currentTrackId);
+      if (currentIndex === -1) {
+        return readyTracks[0] ?? null;
+      }
+
+      if (readyTracks.length === 1) {
+        return readyTracks[0].id === currentTrackId ? null : readyTracks[0];
+      }
+
+      for (let offset = 1; offset <= readyTracks.length; offset++) {
+        const candidate = readyTracks[(currentIndex + offset) % readyTracks.length];
+        if (candidate.id !== currentTrackId) {
+          return candidate;
+        }
+      }
+
+      return null;
+    },
+    [tracks]
+  );
+
+  const mixer = useDjMixer({ isAutoDj, tracks, getNextReadyTrack });
 
   const handleFilesAdded = useCallback(async (files: FileList) => {
     const newTracks: Track[] = Array.from(files)
@@ -78,6 +110,41 @@ function App() {
     });
   }, [tracks, mixer.audioContext, geminiPromptNotes]);
 
+  const orderedReadyTracks = useMemo(
+    () => tracks.filter((track) => track.analysisStatus === 'ready'),
+    [tracks]
+  );
+
+  const { deckA, deckB, currentTimeA, currentTimeB, loadTrack } = mixer;
+  const deckATrackId = deckA.track?.id ?? null;
+  const deckBTrackId = deckB.track?.id ?? null;
+  const activeDeck = deckA.isPlaying ? 'A' : deckB.isPlaying ? 'B' : null;
+  const activeTrackId = activeDeck === 'A' ? deckATrackId : activeDeck === 'B' ? deckBTrackId : null;
+  const activeTrackProgress = activeDeck === 'A' ? currentTimeA : activeDeck === 'B' ? currentTimeB : 0;
+  const upcomingTrack = getNextReadyTrack(activeTrackId);
+
+  useEffect(() => {
+    if (!isAutoDj) return;
+    if (!orderedReadyTracks.length) return;
+
+    const primary = orderedReadyTracks.find((track) => track.id === deckATrackId) ?? orderedReadyTracks[0];
+
+    if (primary && deckATrackId !== primary.id) {
+      loadTrack('A', primary);
+      return;
+    }
+
+    const nextAuto = primary ? getNextReadyTrack(primary.id) : null;
+
+    if (nextAuto) {
+      if (deckBTrackId !== nextAuto.id) {
+        loadTrack('B', nextAuto);
+      }
+    } else if (deckBTrackId) {
+      loadTrack('B', null);
+    }
+  }, [isAutoDj, orderedReadyTracks, deckATrackId, deckBTrackId, getNextReadyTrack, loadTrack]);
+
   const handleRemoveTrack = (trackId: string) => {
     setTracks(tracks => tracks.filter(t => t.id !== trackId));
     if (mixer.deckA.track?.id === trackId) mixer.loadTrack('A', null);
@@ -108,12 +175,21 @@ function App() {
               </Card>
               <PromptSettings prompt={geminiPromptNotes} onPromptChange={setGeminiPromptNotes} />
             </div>
-            <div className="md:col-span-2">
+            <div className="md:col-span-2 space-y-4">
                 <TrackList
                     tracks={tracks}
                     onLoadToDeckA={(track) => mixer.loadTrack('A', track)}
                     onLoadToDeckB={(track) => mixer.loadTrack('B', track)}
                     onRemoveTrack={handleRemoveTrack}
+                />
+                <TransitionTimeline
+                  queue={orderedReadyTracks}
+                  activeTrackId={activeTrackId}
+                  nextTrackId={upcomingTrack?.id ?? null}
+                  activeTrackProgress={activeTrackProgress}
+                  isAutoDj={isAutoDj}
+                  deckAId={deckATrackId}
+                  deckBId={deckBTrackId}
                 />
             </div>
           </div>
