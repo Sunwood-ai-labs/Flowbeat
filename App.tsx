@@ -74,6 +74,13 @@ function App() {
   const [isAutoDj, setIsAutoDj] = useState(false);
   const [geminiPromptNotes, setGeminiPromptNotes] = useState(DEFAULT_GEMINI_PROMPT_NOTES);
   const cacheReady = useAnalysisCacheReady();
+
+  useEffect(() => {
+    if (!cacheReady) return;
+    if ((import.meta as any)?.env?.DEV) {
+      console.info('[Flowbeat][App]', 'Cache initialized. Ready to process tracks.');
+    }
+  }, [cacheReady]);
   const getNextReadyTrack = useCallback(
     (currentTrackId: string | null) => {
       const readyTracks = tracks.filter((track) => track.analysisStatus === 'ready');
@@ -148,6 +155,9 @@ function App() {
 
   useEffect(() => {
     if (!cacheReady) {
+      if ((import.meta as any)?.env?.DEV) {
+        console.info('[Flowbeat][App]', 'Waiting for cache to initialize before processing tracks.');
+      }
       return;
     }
     tracks.forEach(track => {
@@ -171,6 +181,14 @@ function App() {
                 });
 
                 if (cachedMix) {
+                    if ((import.meta as any)?.env?.DEV) {
+                        console.info('[Flowbeat][App]', 'Using cached mix points', {
+                            track: track.name,
+                            prompt: geminiPromptNotes,
+                            startTime: cachedMix.startTime,
+                            fadeOutTime: cachedMix.fadeOutTime,
+                        });
+                    }
                     setTracks(prev => prev.map(t => t.id === track.id ? {
                         ...t,
                         ...audioAnalysis,
@@ -182,7 +200,7 @@ function App() {
                 }
 
                 if ((import.meta as any)?.env?.DEV) {
-                    console.info('Requesting Gemini mix points', {
+                    console.info('[Flowbeat][App]', 'Requesting Gemini mix points', {
                         track: track.name,
                         duration: resolvedDuration,
                         prompt: geminiPromptNotes,

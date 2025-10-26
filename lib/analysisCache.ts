@@ -14,6 +14,7 @@ const isBrowserEnvironment = (): boolean => typeof window !== 'undefined';
 let inMemoryCache: CacheStore = {};
 let initialized = false;
 let initializationPromise: Promise<void> | null = null;
+let syncTimeoutHandle: number | null = null;
 
 const hashString = (value: string): string => {
   let hash = 0;
@@ -49,23 +50,36 @@ const safeParse = (raw: string | null): CacheStore => {
 
 const readCache = (): CacheStore => inMemoryCache;
 
+const log = (...args: unknown[]) => {
+  if (typeof window === 'undefined') return;
+  // eslint-disable-next-line no-console
+  console.info('[Flowbeat][Cache]', ...args);
+};
+
 const loadCacheFromAsset = async () => {
   if (!isBrowserEnvironment()) {
     initialized = true;
     return;
   }
 
+  log('Loading cache from', ASSET_CACHE_URL);
+
   try {
     const response = await fetch(ASSET_CACHE_URL, { cache: 'no-cache' });
     if (response.ok) {
       const text = await response.text();
       inMemoryCache = safeParse(text);
+      const trackCount = Object.keys(inMemoryCache).length;
+      log('Cache load complete. Track keys:', trackCount);
+      if (trackCount === 0) {
+        log('Cache is currently empty. New analyses will populate public/assets/mixpoints.json.');
+      }
     } else {
-      console.warn(`Failed to load mix point cache asset (${response.status}).`);
+      console.warn(`[Flowbeat][Cache] Failed to load asset (${response.status} ${response.statusText}).`);
       inMemoryCache = {};
     }
   } catch (error) {
-    console.warn('Could not load mix point cache asset.', error);
+    console.warn('[Flowbeat][Cache] Could not load asset.', error);
     inMemoryCache = {};
   } finally {
     initialized = true;
@@ -81,6 +95,53 @@ export const initializeAnalysisCache = async () => {
     initializationPromise = loadCacheFromAsset();
   }
   return initializationPromise;
+};
+
+const scheduleAssetSync = () => {
+  if (!isBrowserEnvironment()) {
+    log('Skipping asset sync (no window environment).');
+    return;
+  }
+
+  const envInfo = (import.meta as any)?.env ?? {};
+  log('Preparing asset sync. Runtime env:', {
+    MODE: envInfo.MODE,
+    DEV: envInfo.DEV,
+    PROD: envInfo.PROD,
+  });
+
+  if (typeof fetch === 'undefined') {
+    log('Skipping asset sync (fetch unavailable).');
+    return;
+  }
+
+  if (syncTimeoutHandle !== null) {
+    log('Asset sync already scheduled. Skipping new request.');
+    return;
+  }
+
+  log('Queueing asset sync...');
+
+  syncTimeoutHandle = window.setTimeout(async () => {
+    syncTimeoutHandle = null;
+    log('Syncing cache to asset file...');
+    try {
+      const response = await fetch('/api/mixpoints-cache', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(readCache(), null, 2),
+      });
+      if (!response.ok) {
+        console.warn('[Flowbeat][Cache] Failed to persist asset file.', response.status, await response.text().catch(() => ''));
+      } else {
+        log('Asset file updated successfully.');
+      }
+    } catch (error) {
+      console.warn('[Flowbeat][Cache] Could not persist asset file.', error);
+    }
+  }, 300);
 };
 
 export const getCachedMixPoints = ({
@@ -140,6 +201,13 @@ export const cacheMixPoints = ({
 
   cache[trackKey] = trackEntry;
   inMemoryCache = cache;
+  log('Cached mix points', {
+    trackKey,
+    promptHash,
+    startTime,
+    fadeOutTime,
+  });
+  scheduleAssetSync();
 };
 
 export const clearCachedMixPointsForTrack = (file: File, prompt?: string) => {
@@ -159,12 +227,16 @@ export const clearCachedMixPointsForTrack = (file: File, prompt?: string) => {
         cache[trackKey] = rest;
       }
       inMemoryCache = cache;
+      log('Cleared cached mix points for prompt', { trackKey, promptHash });
+      scheduleAssetSync();
     }
     return;
   }
 
   delete cache[trackKey];
   inMemoryCache = cache;
+  log('Cleared cached mix points for track', { trackKey });
+  scheduleAssetSync();
 };
 
 export const getCacheSnapshot = (): CacheStore => ({ ...readCache() });
