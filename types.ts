@@ -1,12 +1,12 @@
-
 export interface Track {
   id: string;
   file: File;
   name: string;
   duration: number;
   audioBuffer: AudioBuffer;
-  bpm?: number;
-  key?: string;
+  analysisStatus: 'pending' | 'analyzing' | 'ready' | 'error';
+  startTime?: number;
+  fadeOutTime?: number;
 }
 
 export interface Deck {

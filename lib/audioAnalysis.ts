@@ -1,10 +1,6 @@
-
 import { Track } from '../types';
 
-// A global AudioContext to be reused.
-const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-
-export async function analyzeAudioFile(file: File): Promise<Partial<Track>> {
+export async function analyzeAudioFile(file: File, audioContext: AudioContext): Promise<Partial<Track>> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
 

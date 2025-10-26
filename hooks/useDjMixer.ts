@@ -1,10 +1,9 @@
-
 import { useReducer, useRef, useState, useCallback, useEffect } from 'react';
 import { Deck, Track } from '../types';
 
-const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+const CROSSFADE_DURATION = 10; // seconds
 
-const createNewDeck = (): Deck => {
+const createNewDeck = (audioContext: AudioContext): Deck => {
   const gainNode = audioContext.createGain();
   const analyserNode = audioContext.createAnalyser();
   analyserNode.fftSize = 2048;
@@ -21,27 +20,16 @@ const createNewDeck = (): Deck => {
   };
 };
 
-const crossfaderNode = audioContext.createGain();
-const masterGainNode = audioContext.createGain();
-const masterAnalyserNode = audioContext.createAnalyser();
-masterAnalyserNode.fftSize = 2048;
-
-crossfaderNode.connect(masterGainNode);
-masterGainNode.connect(masterAnalyserNode);
-masterAnalyserNode.connect(audioContext.destination);
-
 type MixerState = {
   deckA: Deck;
   deckB: Deck;
   crossfade: number; // -1 for Deck A, 1 for Deck B, 0 for center
-  masterVolume: number;
   isPlaying: boolean;
 };
 
 type Action =
-  | { type: 'LOAD_TRACK'; deck: 'A' | 'B'; track: Track }
+  | { type: 'LOAD_TRACK'; deck: 'A' | 'B'; track: Track | null }
   | { type: 'SET_VOLUME'; deck: 'A' | 'B'; volume: number }
-  | { type: 'SET_MASTER_VOLUME'; volume: number }
   | { type: 'SET_CROSSFADE'; value: number }
   | { type: 'PLAY' }
   | { type: 'PAUSE' }
@@ -58,21 +46,13 @@ const mixerReducer = (state: MixerState, action: Action): MixerState => {
           ...state[deckKey!],
           track: action.track,
           isPlaying: false,
-          startOffset: 0,
+          startOffset: action.track?.startTime || 0,
           startTime: 0,
         },
       };
     case 'SET_VOLUME':
-      // The gain will be updated by the crossfader logic
       return { ...state, [deckKey!]: { ...state[deckKey!], volume: action.volume } };
-    case 'SET_MASTER_VOLUME':
-      masterGainNode.gain.setValueAtTime(action.volume, audioContext.currentTime);
-      return { ...state, masterVolume: action.volume };
     case 'SET_CROSSFADE':
-      const gainA = Math.cos((action.value + 1) * 0.25 * Math.PI);
-      const gainB = Math.cos((1 - action.value) * 0.25 * Math.PI);
-      state.deckA.gainNode.gain.setValueAtTime(gainA * state.deckA.volume, audioContext.currentTime);
-      state.deckB.gainNode.gain.setValueAtTime(gainB * state.deckB.volume, audioContext.currentTime);
       return { ...state, crossfade: action.value };
     case 'PLAY':
       return { ...state, isPlaying: true };
@@ -85,20 +65,48 @@ const mixerReducer = (state: MixerState, action: Action): MixerState => {
   }
 };
 
-export const useDjMixer = () => {
-  const [state, dispatch] = useReducer(mixerReducer, {
-    deckA: createNewDeck(),
-    deckB: createNewDeck(),
-    crossfade: 0,
-    masterVolume: 1,
-    isPlaying: false,
+export const useDjMixer = ({ isAutoDj, tracks }: { isAutoDj: boolean, tracks: Track[] }) => {
+  // Use a single useState lazy initializer for all synchronous setup.
+  const [mixerSetup] = useState(() => {
+    const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+    
+    // Master nodes
+    const crossfaderNode = audioContext.createGain();
+    const masterGainNode = audioContext.createGain();
+    const masterAnalyserNode = audioContext.createAnalyser();
+    masterAnalyserNode.fftSize = 2048;
+
+    crossfaderNode.connect(masterGainNode);
+    masterGainNode.connect(masterAnalyserNode);
+    masterAnalyserNode.connect(audioContext.destination);
+
+    // Initial state for the reducer
+    const initialState: MixerState = {
+        deckA: createNewDeck(audioContext),
+        deckB: createNewDeck(audioContext),
+        crossfade: 0,
+        isPlaying: false,
+    };
+    
+    return {
+        audioContext,
+        crossfaderNode,
+        masterGainNode,
+        masterAnalyserNode,
+        initialState
+    };
   });
 
-  const animationFrameRef = useRef<number>();
+  const { audioContext, crossfaderNode, masterAnalyserNode, initialState } = mixerSetup;
+  
+  const [state, dispatch] = useReducer(mixerReducer, initialState);
+
+  const animationFrameRef = useRef<number | null>(null);
   const [currentTimeA, setCurrentTimeA] = useState(0);
   const [currentTimeB, setCurrentTimeB] = useState(0);
+  const autoDjState = useRef({ isFading: false });
 
-  const playDeck = (deck: 'A' | 'B') => {
+  const playDeck = useCallback((deck: 'A' | 'B', offset?: number) => {
     if (audioContext.state === 'suspended') {
       audioContext.resume();
     }
@@ -108,37 +116,30 @@ export const useDjMixer = () => {
     const source = audioContext.createBufferSource();
     source.buffer = deckState.track.audioBuffer;
     source.connect(deckState.gainNode);
-    source.start(0, deckState.startOffset % deckState.track.duration);
+    const startOffset = offset ?? deckState.startOffset;
+    source.start(0, startOffset % deckState.track.duration);
 
     dispatch({
       type: 'SET_DECK_STATE',
       deck,
-      state: {
-        sourceNode: source,
-        isPlaying: true,
-        startTime: audioContext.currentTime,
-      },
+      state: { sourceNode: source, isPlaying: true, startTime: audioContext.currentTime, startOffset },
     });
-  };
+  }, [state.deckA, state.deckB, audioContext]);
 
-  const pauseDeck = (deck: 'A' | 'B') => {
+  const pauseDeck = useCallback((deck: 'A' | 'B') => {
     const deckState = deck === 'A' ? state.deckA : state.deckB;
     if (!deckState.sourceNode || !deckState.isPlaying) return;
 
-    deckState.sourceNode.stop();
+    deckState.sourceNode.stop(0);
     const elapsedTime = audioContext.currentTime - deckState.startTime;
-    const newOffset = (deckState.startOffset + elapsedTime) % deckState.track!.duration;
+    const newOffset = (deckState.startOffset + elapsedTime);
 
     dispatch({
       type: 'SET_DECK_STATE',
       deck,
-      state: {
-        sourceNode: null,
-        isPlaying: false,
-        startOffset: newOffset,
-      },
+      state: { sourceNode: null, isPlaying: false, startOffset: newOffset >= deckState.track!.duration ? 0 : newOffset },
     });
-  };
+  }, [state.deckA, state.deckB, audioContext]);
 
   const handlePlayPause = useCallback(() => {
     if (state.isPlaying) {
@@ -146,29 +147,25 @@ export const useDjMixer = () => {
       if(state.deckB.isPlaying) pauseDeck('B');
       dispatch({ type: 'PAUSE' });
     } else {
-      if(state.deckA.track) playDeck('A');
-      if(state.deckB.track) playDeck('B');
-      dispatch({ type: 'PLAY' });
+      const deckToPlay = state.deckA.track && !state.deckA.isPlaying ? 'A' : (state.deckB.track && !state.deckB.isPlaying ? 'B' : null);
+      if(deckToPlay) {
+        playDeck(deckToPlay);
+        dispatch({ type: 'PLAY' });
+      }
     }
-  }, [state.isPlaying, state.deckA, state.deckB]);
+  }, [state.isPlaying, state.deckA, state.deckB, playDeck, pauseDeck]);
 
-  const loadTrack = useCallback((deck: 'A' | 'B', track: Track) => {
+  const loadTrack = useCallback((deck: 'A' | 'B', track: Track | null) => {
     const deckKey = deck === 'A' ? 'deckA' : 'deckB';
     const currentDeck = state[deckKey];
     if (currentDeck.sourceNode) {
-        currentDeck.sourceNode.stop();
+        currentDeck.sourceNode.stop(0);
     }
     dispatch({ type: 'LOAD_TRACK', deck, track });
   }, [state.deckA, state.deckB]);
 
   const setVolume = useCallback((deck: 'A' | 'B', volume: number) => {
     dispatch({ type: 'SET_VOLUME', deck, volume });
-    // Re-apply crossfade to update gain
-    dispatch({ type: 'SET_CROSSFADE', value: state.crossfade });
-  }, [state.crossfade]);
-
-  const setMasterVolume = useCallback((volume: number) => {
-    dispatch({ type: 'SET_MASTER_VOLUME', volume });
   }, []);
 
   const setCrossfade = useCallback((value: number) => {
@@ -179,66 +176,110 @@ export const useDjMixer = () => {
   useEffect(() => {
     state.deckA.gainNode.connect(crossfaderNode);
     state.deckB.gainNode.connect(crossfaderNode);
-    // Set initial crossfade and volume
-    setCrossfade(0);
-    setVolume('A', 1);
-    setVolume('B', 1);
-
     return () => {
-        state.deckA.gainNode.disconnect();
-        state.deckB.gainNode.disconnect();
+        try {
+            state.deckA.gainNode.disconnect();
+            state.deckB.gainNode.disconnect();
+        } catch(e) {
+            console.warn("Could not disconnect nodes cleanly on cleanup.");
+        }
     }
-  }, []);
+  }, [state.deckA.gainNode, state.deckB.gainNode, crossfaderNode]);
 
+  // Effect to handle crossfade audio changes
   useEffect(() => {
-    const updateCurrentTime = () => {
-      if (state.deckA.isPlaying && state.deckA.track) {
-        const elapsedTime = audioContext.currentTime - state.deckA.startTime;
-        const newTime = state.deckA.startOffset + elapsedTime;
-        if(newTime >= state.deckA.track.duration) {
-          pauseDeck('A');
-        } else {
-          setCurrentTimeA(newTime);
+    const gainA = Math.cos((state.crossfade + 1) * 0.25 * Math.PI);
+    const gainB = Math.cos((1 - state.crossfade) * 0.25 * Math.PI);
+    state.deckA.gainNode.gain.setTargetAtTime(gainA * state.deckA.volume, audioContext.currentTime, 0.01);
+    state.deckB.gainNode.gain.setTargetAtTime(gainB * state.deckB.volume, audioContext.currentTime, 0.01);
+  }, [state.crossfade, state.deckA.volume, state.deckB.volume, state.deckA.gainNode, state.deckB.gainNode, audioContext]);
+
+
+  // Time-update and AutoDJ logic
+  useEffect(() => {
+    const update = () => {
+      let activeDeck: 'A' | 'B' | null = null;
+      if (state.deckA.isPlaying) activeDeck = 'A';
+      else if (state.deckB.isPlaying) activeDeck = 'B';
+      
+      const currentTimeA = state.deckA.isPlaying ? state.deckA.startOffset + (audioContext.currentTime - state.deckA.startTime) : state.deckA.startOffset;
+      const currentTimeB = state.deckB.isPlaying ? state.deckB.startOffset + (audioContext.currentTime - state.deckB.startTime) : state.deckB.startOffset;
+
+      setCurrentTimeA(currentTimeA);
+      setCurrentTimeB(currentTimeB);
+
+      if (isAutoDj && activeDeck && !autoDjState.current.isFading) {
+        const activeDeckState = activeDeck === 'A' ? state.deckA : state.deckB;
+        const currentTime = activeDeck === 'A' ? currentTimeA : currentTimeB;
+        
+        if (activeDeckState.track?.fadeOutTime && currentTime >= activeDeckState.track.fadeOutTime) {
+          const nextDeck: 'A' | 'B' = activeDeck === 'A' ? 'B' : 'A';
+          const nextDeckState = nextDeck === 'A' ? state.deckA : state.deckB;
+          let nextTrack: Track | undefined = nextDeckState.track || undefined;
+
+          if (!nextTrack) {
+             const currentIndex = tracks.findIndex(t => t.id === activeDeckState.track!.id);
+             nextTrack = tracks.find((t, i) => i > currentIndex && t.analysisStatus === 'ready');
+             if (!nextTrack) { // Loop back to start
+                nextTrack = tracks.find(t => t.analysisStatus === 'ready');
+             }
+          }
+          
+          if (nextTrack && nextTrack.id !== activeDeckState.track.id) {
+            autoDjState.current.isFading = true;
+            loadTrack(nextDeck, nextTrack);
+            
+            setTimeout(() => { // Gives a moment for the track to load
+                playDeck(nextDeck, nextTrack!.startTime);
+                
+                const targetFade = nextDeck === 'B' ? 1 : -1;
+                let start = state.crossfade;
+                let startTime = performance.now();
+                
+                const animateFade = (now: number) => {
+                    const elapsed = (now - startTime) / 1000;
+                    const progress = Math.min(elapsed / CROSSFADE_DURATION, 1);
+                    const newValue = start + (targetFade - start) * progress;
+                    setCrossfade(newValue);
+                    if (progress < 1) {
+                        requestAnimationFrame(animateFade);
+                    } else {
+                        pauseDeck(activeDeck!);
+                        autoDjState.current.isFading = false;
+                    }
+                };
+                requestAnimationFrame(animateFade);
+            }, 100);
+          }
         }
       }
-      if (state.deckB.isPlaying && state.deckB.track) {
-        const elapsedTime = audioContext.currentTime - state.deckB.startTime;
-        const newTime = state.deckB.startOffset + elapsedTime;
-        if(newTime >= state.deckB.track.duration) {
-            pauseDeck('B');
-        } else {
-            setCurrentTimeB(newTime);
-        }
-      }
-      animationFrameRef.current = requestAnimationFrame(updateCurrentTime);
+
+      if(state.deckA.track && currentTimeA >= state.deckA.track.duration) pauseDeck('A');
+      if(state.deckB.track && currentTimeB >= state.deckB.track.duration) pauseDeck('B');
+      
+      animationFrameRef.current = requestAnimationFrame(update);
     };
 
     if(state.deckA.isPlaying || state.deckB.isPlaying) {
       if(!state.isPlaying) dispatch({type: 'PLAY'});
-      animationFrameRef.current = requestAnimationFrame(updateCurrentTime);
+      animationFrameRef.current = requestAnimationFrame(update);
     } else {
       if(state.isPlaying) dispatch({type: 'PAUSE'});
-      if (animationFrameRef.current) {
-        cancelAnimationFrame(animationFrameRef.current);
-      }
+      if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
     }
     
-    return () => {
-      if (animationFrameRef.current) {
-        cancelAnimationFrame(animationFrameRef.current);
-      }
-    };
-  }, [state.isPlaying, state.deckA, state.deckB]);
+    return () => { if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current); };
+  }, [state.isPlaying, state.deckA, state.deckB, isAutoDj, tracks, loadTrack, pauseDeck, playDeck, setCrossfade, audioContext]);
 
   return {
     ...state,
+    audioContext,
     currentTimeA,
     currentTimeB,
     masterAnalyserNode,
     loadTrack,
     handlePlayPause,
     setVolume,
-    setMasterVolume,
     setCrossfade,
   };
 };
