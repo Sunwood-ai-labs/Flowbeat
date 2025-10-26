@@ -1,7 +1,15 @@
-
 import { useState, useRef, useCallback, useEffect } from 'react';
 import type { Track } from '../types';
 import { analyzeAudioFile } from '../lib/audioAnalysis';
+
+type Player = {
+  sourceNode: AudioBufferSourceNode | null;
+  gainNode: GainNode | null;
+  filterNode: BiquadFilterNode | null;
+  analyserNode: AnalyserNode | null;
+};
+
+export type TransitionType = 'volume' | 'eq';
 
 export const useDjMixer = () => {
   const [tracks, setTracks] = useState<Track[]>([]);
@@ -10,51 +18,67 @@ export const useDjMixer = () => {
   const [volume, setVolume] = useState(0.7);
   const [progress, setProgress] = useState(0);
   const [isAutoDj, setIsAutoDj] = useState(false);
+  const [transitionType, setTransitionType] = useState<TransitionType>('eq');
+  const crossfadeDuration = 8; // seconds
 
   const audioContextRef = useRef<AudioContext | null>(null);
-  const sourceNodeRef = useRef<AudioBufferSourceNode | null>(null);
-  const gainNodeRef = useRef<GainNode | null>(null);
-  const analyserNodeRef = useRef<AnalyserNode | null>(null);
+  const playerARef = useRef<Player | null>(null);
+  const playerBRef = useRef<Player | null>(null);
+  const activePlayerRef = useRef<'A' | 'B'>('A');
 
   const startedAtRef = useRef(0);
   const pausedAtRef = useRef(0);
   const progressIntervalRef = useRef<number | null>(null);
+  const fadeTimeoutRef = useRef<number | null>(null);
 
-  const cleanupPlayback = useCallback(() => {
-    if (sourceNodeRef.current) {
-      sourceNodeRef.current.onended = null;
-      try {
-        sourceNodeRef.current.stop();
-      } catch (e) {
-        // Can throw if already stopped
-      }
-      sourceNodeRef.current.disconnect();
-      sourceNodeRef.current = null;
-    }
-    if (progressIntervalRef.current) {
-      clearInterval(progressIntervalRef.current);
-      progressIntervalRef.current = null;
-    }
+  const createPlayer = useCallback((context: AudioContext): Player => {
+    const gainNode = context.createGain();
+    const filterNode = context.createBiquadFilter();
+    filterNode.type = 'lowshelf';
+    filterNode.frequency.value = 320; // Cutoff frequency for bass
+    const analyserNode = context.createAnalyser();
+    analyserNode.fftSize = 2048;
+
+    gainNode.connect(filterNode);
+    filterNode.connect(analyserNode);
+    analyserNode.connect(context.destination);
+
+    return { sourceNode: null, gainNode, filterNode, analyserNode };
   }, []);
 
   const initializeAudio = useCallback(() => {
     if (!audioContextRef.current) {
       const context = new (window.AudioContext || (window as any).webkitAudioContext)();
+      playerARef.current = createPlayer(context);
+      playerBRef.current = createPlayer(context);
       audioContextRef.current = context;
-
-      gainNodeRef.current = context.createGain();
-      gainNodeRef.current.gain.value = volume;
-
-      analyserNodeRef.current = context.createAnalyser();
-      analyserNodeRef.current.fftSize = 2048;
-
-      gainNodeRef.current.connect(analyserNodeRef.current);
-      analyserNodeRef.current.connect(context.destination);
     }
     if (audioContextRef.current.state === 'suspended') {
       audioContextRef.current.resume();
     }
-  }, [volume]);
+  }, [createPlayer]);
+  
+  const cleanupPlayer = useCallback((player: Player | null) => {
+    if (player?.sourceNode) {
+      try {
+        player.sourceNode.stop();
+      } catch (e) { /* Ignore errors if already stopped */ }
+      player.sourceNode.disconnect();
+      player.sourceNode = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    const playerA = playerARef.current;
+    const playerB = playerBRef.current;
+    return () => {
+      cleanupPlayer(playerA);
+      cleanupPlayer(playerB);
+      if (fadeTimeoutRef.current) clearTimeout(fadeTimeoutRef.current);
+      if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
+      audioContextRef.current?.close();
+    };
+  }, [cleanupPlayer]);
 
   const addTracks = useCallback(async (files: FileList) => {
     initializeAudio();
@@ -62,7 +86,7 @@ export const useDjMixer = () => {
     for (const file of Array.from(files)) {
       try {
         const analysis = await analyzeAudioFile(file);
-        if (analysis.duration && analysis.audioBuffer) {
+        if (analysis.duration && analysis.audioBuffer && analysis.optimalCuePoint) {
           newTracks.push({
             id: `${file.name}-${Date.now()}`,
             name: file.name,
@@ -71,6 +95,7 @@ export const useDjMixer = () => {
             audioBuffer: analysis.audioBuffer,
             bpm: analysis.bpm || null,
             key: analysis.key || null,
+            optimalCuePoint: analysis.optimalCuePoint,
           });
         }
       } catch (error) {
@@ -84,64 +109,135 @@ export const useDjMixer = () => {
   }, [initializeAudio, currentTrackIndex]);
 
   const playTrack = useCallback((index: number, startTime = 0) => {
-    if (!audioContextRef.current || !gainNodeRef.current || index < 0 || index >= tracks.length) return;
+    if (!audioContextRef.current || index < 0 || index >= tracks.length) return;
     
-    cleanupPlayback();
+    if (fadeTimeoutRef.current) clearTimeout(fadeTimeoutRef.current);
+    cleanupPlayer(playerARef.current);
+    cleanupPlayer(playerBRef.current);
+    
+    const activePlayer = playerARef.current; // Always start with Player A
+    if (!activePlayer?.gainNode || !activePlayer.filterNode) return;
+    activePlayerRef.current = 'A';
 
     const track = tracks[index];
     const source = audioContextRef.current.createBufferSource();
     source.buffer = track.audioBuffer;
-    source.connect(gainNodeRef.current);
-    
+    source.connect(activePlayer.gainNode);
     source.start(0, startTime);
-    sourceNodeRef.current = source;
-    
+    activePlayer.sourceNode = source;
+
+    activePlayer.gainNode.gain.value = volume;
+    activePlayer.filterNode.gain.value = 0; // Reset EQ gain
+
     pausedAtRef.current = startTime;
     startedAtRef.current = audioContextRef.current.currentTime - startTime;
     
     setCurrentTrackIndex(index);
     setIsPlaying(true);
-    
-    source.onended = () => {
-      // Only process 'onended' if it's the current source, to avoid old events firing.
-      if (sourceNodeRef.current === source) {
-        cleanupPlayback();
-        setIsPlaying(false);
-        if (isAutoDj) {
-            const nextIndex = (index + 1) % tracks.length;
-            if (tracks.length > 0) {
-              playTrack(nextIndex);
-            }
-        } else {
-            setProgress(100); // Mark as finished
+
+    if (isAutoDj) {
+        const timeUntilFade = track.optimalCuePoint - startTime - crossfadeDuration;
+        if (timeUntilFade > 0) {
+            fadeTimeoutRef.current = window.setTimeout(() => {
+                crossfade(index);
+            }, timeUntilFade * 1000);
         }
+    }
+
+    source.onended = () => {
+      if (activePlayerRef.current === 'A' && activePlayer.sourceNode === source) {
+         if (isPlaying) {
+             setIsPlaying(false);
+             setProgress(100);
+         }
       }
     };
-  }, [tracks, cleanupPlayback, isAutoDj]);
-  
+  }, [tracks, volume, isAutoDj, crossfadeDuration, cleanupPlayer]);
+
+  const crossfade = useCallback((currentIndex: number) => {
+    if (!audioContextRef.current || tracks.length < 2) return;
+    
+    const nextIndex = (currentIndex + 1) % tracks.length;
+    const nextTrack = tracks[nextIndex];
+
+    const currentTime = audioContextRef.current.currentTime;
+
+    const fadingOutPlayer = activePlayerRef.current === 'A' ? playerARef.current : playerBRef.current;
+    const fadingInPlayer = activePlayerRef.current === 'A' ? playerBRef.current : playerARef.current;
+    
+    if (!fadingOutPlayer?.gainNode || !fadingInPlayer?.gainNode || !fadingInPlayer.filterNode) return;
+    
+    // Start next track
+    const nextSource = audioContextRef.current.createBufferSource();
+    nextSource.buffer = nextTrack.audioBuffer;
+    nextSource.connect(fadingInPlayer.gainNode);
+    nextSource.start(currentTime);
+    fadingInPlayer.sourceNode = nextSource;
+
+    // Volume fade
+    fadingOutPlayer.gainNode.gain.linearRampToValueAtTime(0, currentTime + crossfadeDuration);
+    fadingInPlayer.gainNode.gain.setValueAtTime(0, currentTime);
+    fadingInPlayer.gainNode.gain.linearRampToValueAtTime(volume, currentTime + crossfadeDuration);
+
+    // EQ Mix
+    if (transitionType === 'eq' && fadingOutPlayer.filterNode) {
+        fadingOutPlayer.filterNode.gain.linearRampToValueAtTime(-40, currentTime + crossfadeDuration * 0.75);
+        fadingInPlayer.filterNode.gain.setValueAtTime(-40, currentTime);
+        fadingInPlayer.filterNode.gain.linearRampToValueAtTime(0, currentTime + crossfadeDuration * 0.75);
+    }
+
+    // After fade, cleanup and update state
+    setTimeout(() => {
+      cleanupPlayer(fadingOutPlayer);
+      if (fadingOutPlayer.filterNode) fadingOutPlayer.filterNode.gain.value = 0; // Reset EQ
+      
+      activePlayerRef.current = activePlayerRef.current === 'A' ? 'B' : 'A';
+      setCurrentTrackIndex(nextIndex);
+      
+      pausedAtRef.current = 0;
+      startedAtRef.current = currentTime;
+
+      // Schedule next fade
+      if (isAutoDj) {
+        const timeUntilFade = nextTrack.optimalCuePoint - crossfadeDuration;
+        if (timeUntilFade > 0) {
+            fadeTimeoutRef.current = window.setTimeout(() => {
+                crossfade(nextIndex);
+            }, timeUntilFade * 1000);
+        }
+      }
+    }, crossfadeDuration * 1000);
+
+  }, [tracks, volume, isAutoDj, crossfadeDuration, transitionType, cleanupPlayer]);
+
   const togglePlayPause = useCallback(() => {
     initializeAudio();
     if (!audioContextRef.current) return;
 
     if (isPlaying) {
       audioContextRef.current.suspend().then(() => {
-        if (audioContextRef.current) {
-          pausedAtRef.current = audioContextRef.current.currentTime - startedAtRef.current;
-        }
+        if (audioContextRef.current) pausedAtRef.current = audioContextRef.current.currentTime - startedAtRef.current;
+        if (fadeTimeoutRef.current) clearTimeout(fadeTimeoutRef.current);
         setIsPlaying(false);
       });
     } else {
       audioContextRef.current.resume();
-      if (sourceNodeRef.current) { // Resuming a paused track
+      if ((playerARef.current?.sourceNode || playerBRef.current?.sourceNode)) {
         startedAtRef.current = audioContextRef.current.currentTime - pausedAtRef.current;
         setIsPlaying(true);
-      } else if (currentTrackIndex !== -1) { // Playing a track from start
-        playTrack(currentTrackIndex, pausedAtRef.current);
-      } else if (tracks.length > 0) { // Playing first track
-        playTrack(0);
+        // Reschedule fade if in Auto DJ mode
+        const track = tracks[currentTrackIndex];
+        if (isAutoDj && track) {
+            const remainingTime = track.optimalCuePoint - pausedAtRef.current - crossfadeDuration;
+            if (remainingTime > 0) {
+                 fadeTimeoutRef.current = window.setTimeout(() => crossfade(currentTrackIndex), remainingTime * 1000);
+            }
+        }
+      } else if (tracks.length > 0) {
+        playTrack(currentTrackIndex !== -1 ? currentTrackIndex : 0);
       }
     }
-  }, [isPlaying, currentTrackIndex, tracks, playTrack, initializeAudio]);
+  }, [isPlaying, currentTrackIndex, tracks, playTrack, isAutoDj, crossfadeDuration, crossfade, initializeAudio]);
 
   const skipForward = useCallback(() => {
     if (tracks.length > 0) {
@@ -164,10 +260,11 @@ export const useDjMixer = () => {
       playTrack(currentTrackIndex, newTime);
     }
   };
-  
+
   useEffect(() => {
-    if (gainNodeRef.current) {
-      gainNodeRef.current.gain.setValueAtTime(volume, audioContextRef.current?.currentTime ?? 0);
+    const activePlayer = activePlayerRef.current === 'A' ? playerARef.current : playerBRef.current;
+    if (activePlayer?.gainNode && audioContextRef.current) {
+      activePlayer.gainNode.gain.setValueAtTime(volume, audioContextRef.current.currentTime);
     }
   }, [volume]);
   
@@ -175,7 +272,7 @@ export const useDjMixer = () => {
     if (isPlaying) {
       progressIntervalRef.current = window.setInterval(() => {
         if (audioContextRef.current && currentTrackIndex !== -1 && tracks[currentTrackIndex]) {
-          const elapsedTime = pausedAtRef.current + (audioContextRef.current.currentTime - startedAtRef.current);
+          const elapsedTime = audioContextRef.current.currentTime - startedAtRef.current;
           const duration = tracks[currentTrackIndex].duration;
           const newProgress = Math.min((elapsedTime / duration) * 100, 100);
           setProgress(newProgress);
@@ -185,24 +282,17 @@ export const useDjMixer = () => {
       clearInterval(progressIntervalRef.current);
     }
     return () => {
-      if (progressIntervalRef.current) {
-        clearInterval(progressIntervalRef.current);
-      }
+      if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
     };
   }, [isPlaying, currentTrackIndex, tracks]);
 
-  useEffect(() => {
-    return () => {
-      cleanupPlayback();
-      audioContextRef.current?.close();
-    };
-  }, [cleanupPlayback]);
+  const nextTrackIndex = tracks.length > 1 && currentTrackIndex !== -1 ? (currentTrackIndex + 1) % tracks.length : -1;
 
   return {
     tracks,
     addTracks,
     currentTrackIndex,
-    nextTrackIndex: tracks.length > 1 && currentTrackIndex !== -1 ? (currentTrackIndex + 1) % tracks.length : -1,
+    nextTrackIndex,
     isPlaying,
     togglePlayPause,
     skipForward,
@@ -213,6 +303,10 @@ export const useDjMixer = () => {
     seek,
     isAutoDj,
     setIsAutoDj,
-    analyserNode: analyserNodeRef.current,
+    analyserNodeA: playerARef.current?.analyserNode ?? null,
+    analyserNodeB: playerBRef.current?.analyserNode ?? null,
+    activePlayer: activePlayerRef.current,
+    transitionType,
+    setTransitionType,
   };
 };

@@ -1,4 +1,3 @@
-
 export interface Track {
   id: string;
   name: string;
@@ -7,6 +6,7 @@ export interface Track {
   audioBuffer: AudioBuffer;
   bpm: number | null;
   key: string | null;
+  optimalCuePoint: number; // The optimal point in seconds to start a crossfade
 }
 
 export interface Transition {

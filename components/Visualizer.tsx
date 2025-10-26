@@ -1,16 +1,15 @@
-
 import React, { useRef, useEffect } from 'react';
 
 interface VisualizerProps {
   analyserNode: AnalyserNode | null;
-  isPlaying: boolean;
+  isPlaying: boolean; // Retained for potential future use, but not gating the animation loop
 }
 
-const Visualizer: React.FC<VisualizerProps> = ({ analyserNode, isPlaying }) => {
+const Visualizer: React.FC<VisualizerProps> = ({ analyserNode }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
-    if (!analyserNode || !canvasRef.current || !isPlaying) return;
+    if (!analyserNode || !canvasRef.current) return;
 
     const canvas = canvasRef.current;
     const canvasCtx = canvas.getContext('2d');
@@ -26,11 +25,16 @@ const Visualizer: React.FC<VisualizerProps> = ({ analyserNode, isPlaying }) => {
 
       analyserNode.getByteTimeDomainData(dataArray);
 
-      canvasCtx.fillStyle = 'hsl(222.2 84% 4.9%)'; // background color from tailwind.config
+      // A check to see if there's silence
+      const isSilent = dataArray.every(v => v === 128);
+
+      canvasCtx.fillStyle = 'hsl(240 10% 3.9%)';
       canvasCtx.fillRect(0, 0, canvas.width, canvas.height);
+      
+      if (isSilent) return; // Don't draw anything if silent
 
       canvasCtx.lineWidth = 2;
-      canvasCtx.strokeStyle = 'hsl(210 40% 98%)'; // primary-foreground
+      canvasCtx.strokeStyle = 'hsl(0 0% 98%)';
 
       canvasCtx.beginPath();
 
@@ -58,12 +62,11 @@ const Visualizer: React.FC<VisualizerProps> = ({ analyserNode, isPlaying }) => {
 
     return () => {
       cancelAnimationFrame(animationFrameId);
-      // Clear canvas when component unmounts or effect re-runs
       if (canvasCtx) {
         canvasCtx.clearRect(0, 0, canvas.width, canvas.height);
       }
     };
-  }, [analyserNode, isPlaying]);
+  }, [analyserNode]);
 
   return (
     <div className="bg-background rounded-lg border aspect-[4/1] w-full overflow-hidden">
