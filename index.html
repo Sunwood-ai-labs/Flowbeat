@@ -1,0 +1,71 @@
+
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-agpl-3.0" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Auto DJ Mixer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              border: "hsl(240 3.7% 15.9%)",
+              input: "hsl(240 3.7% 15.9%)",
+              ring: "hsl(240 4.9% 83.9%)",
+              background: "hsl(240 10% 3.9%)",
+              foreground: "hsl(0 0% 98%)",
+              primary: {
+                DEFAULT: "hsl(0 0% 98%)",
+                foreground: "hsl(240 5.9% 10%)",
+              },
+              secondary: {
+                DEFAULT: "hsl(240 3.7% 15.9%)",
+                foreground: "hsl(0 0% 98%)",
+              },
+              destructive: {
+                DEFAULT: "hsl(0 62.8% 30.6%)",
+                foreground: "hsl(0 0% 98%)",
+              },
+              muted: {
+                DEFAULT: "hsl(240 3.7% 15.9%)",
+                foreground: "hsl(240 5% 64.9%)",
+              },
+              accent: {
+                DEFAULT: "hsl(240 3.7% 15.9%)",
+                foreground: "hsl(0 0% 98%)",
+              },
+              popover: {
+                DEFAULT: "hsl(240 10% 3.9%)",
+                foreground: "hsl(0 0% 98%)",
+              },
+              card: {
+                DEFAULT: "hsl(240 10% 3.9%)",
+                foreground: "hsl(0 0% 98%)",
+              },
+            },
+          }
+        }
+      }
+    </script>
+  <script type="importmap">
+{
+  "imports": {
+    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
+    "react/": "https://aistudiocdn.com/react@^19.2.0/",
+    "react": "https://aistudiocdn.com/react@^19.2.0",
+    "tailwind-merge": "https://aistudiocdn.com/tailwind-merge@^3.3.1",
+    "@radix-ui/react-slot": "https://aistudiocdn.com/@radix-ui/react-slot@^1.2.3",
+    "clsx": "https://aistudiocdn.com/clsx@^2.1.1",
+    "class-variance-authority": "https://aistudiocdn.com/class-variance-authority@^0.7.1"
+  }
+}
+</script>
+</head>
+  <body class="bg-background text-foreground">
+    <div id="root"></div>
+    <script type="module" src="/index.tsx"></script>
+  </body>
+</html>

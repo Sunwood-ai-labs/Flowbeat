@@ -1,0 +1,5 @@
+{
+  "name": "Auto DJ Mixer",
+  "description": "An application that allows users to upload multiple songs and automatically mixes between them with crossfading, just like a DJ. It features a sleek, modern interface with audio visualization.",
+  "requestFramePermissions": []
+}
