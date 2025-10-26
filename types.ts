@@ -1,15 +1,21 @@
+
 export interface Track {
   id: string;
+  file: File;
   name: string;
   duration: number;
-  file: File;
   audioBuffer: AudioBuffer;
-  bpm: number | null;
-  key: string | null;
-  optimalCuePoint: number; // The optimal point in seconds to start a crossfade
+  bpm?: number;
+  key?: string;
 }
 
-export interface Transition {
-  type: 'fade' | 'crossfade' | 'cut';
-  duration: number;
+export interface Deck {
+  track: Track | null;
+  sourceNode: AudioBufferSourceNode | null;
+  gainNode: GainNode;
+  volume: number;
+  isPlaying: boolean;
+  startTime: number; // The AudioContext's currentTime when playback started
+  startOffset: number; // The offset within the track to start/resume from
+  analyserNode: AnalyserNode;
 }

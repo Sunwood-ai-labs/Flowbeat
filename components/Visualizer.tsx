@@ -2,7 +2,6 @@ import React, { useRef, useEffect } from 'react';
 
 interface VisualizerProps {
   analyserNode: AnalyserNode | null;
-  isPlaying: boolean; // Retained for potential future use, but not gating the animation loop
 }
 
 const Visualizer: React.FC<VisualizerProps> = ({ analyserNode }) => {
@@ -15,47 +14,41 @@ const Visualizer: React.FC<VisualizerProps> = ({ analyserNode }) => {
     const canvasCtx = canvas.getContext('2d');
     if (!canvasCtx) return;
 
-    const bufferLength = analyserNode.frequencyBinCount;
-    const dataArray = new Uint8Array(bufferLength);
+    // Use a smaller portion of frequency bins for a cleaner look
+    const bufferLength = analyserNode.frequencyBinCount * 0.7;
+    const dataArray = new Uint8Array(analyserNode.frequencyBinCount);
 
     let animationFrameId: number;
 
     const draw = () => {
       animationFrameId = requestAnimationFrame(draw);
 
-      analyserNode.getByteTimeDomainData(dataArray);
+      analyserNode.getByteFrequencyData(dataArray);
 
-      // A check to see if there's silence
-      const isSilent = dataArray.every(v => v === 128);
+      const isSilent = dataArray.every(v => v === 0);
 
       canvasCtx.fillStyle = 'hsl(240 10% 3.9%)';
       canvasCtx.fillRect(0, 0, canvas.width, canvas.height);
       
-      if (isSilent) return; // Don't draw anything if silent
+      if (isSilent) return;
 
-      canvasCtx.lineWidth = 2;
-      canvasCtx.strokeStyle = 'hsl(0 0% 98%)';
-
-      canvasCtx.beginPath();
-
-      const sliceWidth = (canvas.width * 1.0) / bufferLength;
+      const barWidth = (canvas.width / bufferLength) * 1.25;
       let x = 0;
 
       for (let i = 0; i < bufferLength; i++) {
-        const v = dataArray[i] / 128.0;
-        const y = (v * canvas.height) / 2;
+        const barHeight = (dataArray[i] / 255) * canvas.height;
 
-        if (i === 0) {
-          canvasCtx.moveTo(x, y);
-        } else {
-          canvasCtx.lineTo(x, y);
-        }
+        const hue = 200 + (dataArray[i] / 255) * 80;
+        const gradient = canvasCtx.createLinearGradient(0, canvas.height, 0, canvas.height - barHeight);
+        gradient.addColorStop(0, `hsl(${hue}, 100%, 50%)`);
+        gradient.addColorStop(0.5, `hsl(${hue + 20}, 100%, 60%)`);
+        gradient.addColorStop(1, `hsl(${hue + 40}, 100%, 70%)`);
 
-        x += sliceWidth;
+        canvasCtx.fillStyle = gradient;
+        canvasCtx.fillRect(x, canvas.height - barHeight, barWidth, barHeight);
+
+        x += barWidth + 2;
       }
-
-      canvasCtx.lineTo(canvas.width, canvas.height / 2);
-      canvasCtx.stroke();
     };
 
     draw();

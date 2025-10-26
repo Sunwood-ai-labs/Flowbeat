@@ -1,312 +1,244 @@
-import { useState, useRef, useCallback, useEffect } from 'react';
-import type { Track } from '../types';
-import { analyzeAudioFile } from '../lib/audioAnalysis';
 
-type Player = {
-  sourceNode: AudioBufferSourceNode | null;
-  gainNode: GainNode | null;
-  filterNode: BiquadFilterNode | null;
-  analyserNode: AnalyserNode | null;
+import { useReducer, useRef, useState, useCallback, useEffect } from 'react';
+import { Deck, Track } from '../types';
+
+const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+
+const createNewDeck = (): Deck => {
+  const gainNode = audioContext.createGain();
+  const analyserNode = audioContext.createAnalyser();
+  analyserNode.fftSize = 2048;
+  gainNode.connect(analyserNode);
+  return {
+    track: null,
+    sourceNode: null,
+    gainNode,
+    analyserNode,
+    volume: 1,
+    isPlaying: false,
+    startTime: 0,
+    startOffset: 0,
+  };
 };
 
-export type TransitionType = 'volume' | 'eq';
+const crossfaderNode = audioContext.createGain();
+const masterGainNode = audioContext.createGain();
+const masterAnalyserNode = audioContext.createAnalyser();
+masterAnalyserNode.fftSize = 2048;
+
+crossfaderNode.connect(masterGainNode);
+masterGainNode.connect(masterAnalyserNode);
+masterAnalyserNode.connect(audioContext.destination);
+
+type MixerState = {
+  deckA: Deck;
+  deckB: Deck;
+  crossfade: number; // -1 for Deck A, 1 for Deck B, 0 for center
+  masterVolume: number;
+  isPlaying: boolean;
+};
+
+type Action =
+  | { type: 'LOAD_TRACK'; deck: 'A' | 'B'; track: Track }
+  | { type: 'SET_VOLUME'; deck: 'A' | 'B'; volume: number }
+  | { type: 'SET_MASTER_VOLUME'; volume: number }
+  | { type: 'SET_CROSSFADE'; value: number }
+  | { type: 'PLAY' }
+  | { type: 'PAUSE' }
+  | { type: 'SET_DECK_STATE'; deck: 'A' | 'B'; state: Partial<Deck> };
+
+const mixerReducer = (state: MixerState, action: Action): MixerState => {
+  const deckKey = 'deck' in action ? (action.deck === 'A' ? 'deckA' : 'deckB') : null;
+
+  switch (action.type) {
+    case 'LOAD_TRACK':
+      return {
+        ...state,
+        [deckKey!]: {
+          ...state[deckKey!],
+          track: action.track,
+          isPlaying: false,
+          startOffset: 0,
+          startTime: 0,
+        },
+      };
+    case 'SET_VOLUME':
+      // The gain will be updated by the crossfader logic
+      return { ...state, [deckKey!]: { ...state[deckKey!], volume: action.volume } };
+    case 'SET_MASTER_VOLUME':
+      masterGainNode.gain.setValueAtTime(action.volume, audioContext.currentTime);
+      return { ...state, masterVolume: action.volume };
+    case 'SET_CROSSFADE':
+      const gainA = Math.cos((action.value + 1) * 0.25 * Math.PI);
+      const gainB = Math.cos((1 - action.value) * 0.25 * Math.PI);
+      state.deckA.gainNode.gain.setValueAtTime(gainA * state.deckA.volume, audioContext.currentTime);
+      state.deckB.gainNode.gain.setValueAtTime(gainB * state.deckB.volume, audioContext.currentTime);
+      return { ...state, crossfade: action.value };
+    case 'PLAY':
+      return { ...state, isPlaying: true };
+    case 'PAUSE':
+      return { ...state, isPlaying: false };
+    case 'SET_DECK_STATE':
+      return { ...state, [deckKey!]: { ...state[deckKey!], ...action.state } };
+    default:
+      return state;
+  }
+};
 
 export const useDjMixer = () => {
-  const [tracks, setTracks] = useState<Track[]>([]);
-  const [currentTrackIndex, setCurrentTrackIndex] = useState<number>(-1);
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [volume, setVolume] = useState(0.7);
-  const [progress, setProgress] = useState(0);
-  const [isAutoDj, setIsAutoDj] = useState(false);
-  const [transitionType, setTransitionType] = useState<TransitionType>('eq');
-  const crossfadeDuration = 8; // seconds
+  const [state, dispatch] = useReducer(mixerReducer, {
+    deckA: createNewDeck(),
+    deckB: createNewDeck(),
+    crossfade: 0,
+    masterVolume: 1,
+    isPlaying: false,
+  });
 
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const playerARef = useRef<Player | null>(null);
-  const playerBRef = useRef<Player | null>(null);
-  const activePlayerRef = useRef<'A' | 'B'>('A');
+  const animationFrameRef = useRef<number>();
+  const [currentTimeA, setCurrentTimeA] = useState(0);
+  const [currentTimeB, setCurrentTimeB] = useState(0);
 
-  const startedAtRef = useRef(0);
-  const pausedAtRef = useRef(0);
-  const progressIntervalRef = useRef<number | null>(null);
-  const fadeTimeoutRef = useRef<number | null>(null);
-
-  const createPlayer = useCallback((context: AudioContext): Player => {
-    const gainNode = context.createGain();
-    const filterNode = context.createBiquadFilter();
-    filterNode.type = 'lowshelf';
-    filterNode.frequency.value = 320; // Cutoff frequency for bass
-    const analyserNode = context.createAnalyser();
-    analyserNode.fftSize = 2048;
-
-    gainNode.connect(filterNode);
-    filterNode.connect(analyserNode);
-    analyserNode.connect(context.destination);
-
-    return { sourceNode: null, gainNode, filterNode, analyserNode };
-  }, []);
-
-  const initializeAudio = useCallback(() => {
-    if (!audioContextRef.current) {
-      const context = new (window.AudioContext || (window as any).webkitAudioContext)();
-      playerARef.current = createPlayer(context);
-      playerBRef.current = createPlayer(context);
-      audioContextRef.current = context;
+  const playDeck = (deck: 'A' | 'B') => {
+    if (audioContext.state === 'suspended') {
+      audioContext.resume();
     }
-    if (audioContextRef.current.state === 'suspended') {
-      audioContextRef.current.resume();
-    }
-  }, [createPlayer]);
-  
-  const cleanupPlayer = useCallback((player: Player | null) => {
-    if (player?.sourceNode) {
-      try {
-        player.sourceNode.stop();
-      } catch (e) { /* Ignore errors if already stopped */ }
-      player.sourceNode.disconnect();
-      player.sourceNode = null;
-    }
-  }, []);
+    const deckState = deck === 'A' ? state.deckA : state.deckB;
+    if (!deckState.track || deckState.isPlaying) return;
 
-  useEffect(() => {
-    const playerA = playerARef.current;
-    const playerB = playerBRef.current;
-    return () => {
-      cleanupPlayer(playerA);
-      cleanupPlayer(playerB);
-      if (fadeTimeoutRef.current) clearTimeout(fadeTimeoutRef.current);
-      if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
-      audioContextRef.current?.close();
-    };
-  }, [cleanupPlayer]);
+    const source = audioContext.createBufferSource();
+    source.buffer = deckState.track.audioBuffer;
+    source.connect(deckState.gainNode);
+    source.start(0, deckState.startOffset % deckState.track.duration);
 
-  const addTracks = useCallback(async (files: FileList) => {
-    initializeAudio();
-    const newTracks: Track[] = [];
-    for (const file of Array.from(files)) {
-      try {
-        const analysis = await analyzeAudioFile(file);
-        if (analysis.duration && analysis.audioBuffer && analysis.optimalCuePoint) {
-          newTracks.push({
-            id: `${file.name}-${Date.now()}`,
-            name: file.name,
-            file,
-            duration: analysis.duration,
-            audioBuffer: analysis.audioBuffer,
-            bpm: analysis.bpm || null,
-            key: analysis.key || null,
-            optimalCuePoint: analysis.optimalCuePoint,
-          });
-        }
-      } catch (error) {
-        console.error(`Could not analyze file ${file.name}:`, error);
-      }
-    }
-    setTracks(prev => [...prev, ...newTracks]);
-    if (currentTrackIndex === -1 && newTracks.length > 0) {
-      setCurrentTrackIndex(0);
-    }
-  }, [initializeAudio, currentTrackIndex]);
-
-  const playTrack = useCallback((index: number, startTime = 0) => {
-    if (!audioContextRef.current || index < 0 || index >= tracks.length) return;
-    
-    if (fadeTimeoutRef.current) clearTimeout(fadeTimeoutRef.current);
-    cleanupPlayer(playerARef.current);
-    cleanupPlayer(playerBRef.current);
-    
-    const activePlayer = playerARef.current; // Always start with Player A
-    if (!activePlayer?.gainNode || !activePlayer.filterNode) return;
-    activePlayerRef.current = 'A';
-
-    const track = tracks[index];
-    const source = audioContextRef.current.createBufferSource();
-    source.buffer = track.audioBuffer;
-    source.connect(activePlayer.gainNode);
-    source.start(0, startTime);
-    activePlayer.sourceNode = source;
-
-    activePlayer.gainNode.gain.value = volume;
-    activePlayer.filterNode.gain.value = 0; // Reset EQ gain
-
-    pausedAtRef.current = startTime;
-    startedAtRef.current = audioContextRef.current.currentTime - startTime;
-    
-    setCurrentTrackIndex(index);
-    setIsPlaying(true);
-
-    if (isAutoDj) {
-        const timeUntilFade = track.optimalCuePoint - startTime - crossfadeDuration;
-        if (timeUntilFade > 0) {
-            fadeTimeoutRef.current = window.setTimeout(() => {
-                crossfade(index);
-            }, timeUntilFade * 1000);
-        }
-    }
-
-    source.onended = () => {
-      if (activePlayerRef.current === 'A' && activePlayer.sourceNode === source) {
-         if (isPlaying) {
-             setIsPlaying(false);
-             setProgress(100);
-         }
-      }
-    };
-  }, [tracks, volume, isAutoDj, crossfadeDuration, cleanupPlayer]);
-
-  const crossfade = useCallback((currentIndex: number) => {
-    if (!audioContextRef.current || tracks.length < 2) return;
-    
-    const nextIndex = (currentIndex + 1) % tracks.length;
-    const nextTrack = tracks[nextIndex];
-
-    const currentTime = audioContextRef.current.currentTime;
-
-    const fadingOutPlayer = activePlayerRef.current === 'A' ? playerARef.current : playerBRef.current;
-    const fadingInPlayer = activePlayerRef.current === 'A' ? playerBRef.current : playerARef.current;
-    
-    if (!fadingOutPlayer?.gainNode || !fadingInPlayer?.gainNode || !fadingInPlayer.filterNode) return;
-    
-    // Start next track
-    const nextSource = audioContextRef.current.createBufferSource();
-    nextSource.buffer = nextTrack.audioBuffer;
-    nextSource.connect(fadingInPlayer.gainNode);
-    nextSource.start(currentTime);
-    fadingInPlayer.sourceNode = nextSource;
-
-    // Volume fade
-    fadingOutPlayer.gainNode.gain.linearRampToValueAtTime(0, currentTime + crossfadeDuration);
-    fadingInPlayer.gainNode.gain.setValueAtTime(0, currentTime);
-    fadingInPlayer.gainNode.gain.linearRampToValueAtTime(volume, currentTime + crossfadeDuration);
-
-    // EQ Mix
-    if (transitionType === 'eq' && fadingOutPlayer.filterNode) {
-        fadingOutPlayer.filterNode.gain.linearRampToValueAtTime(-40, currentTime + crossfadeDuration * 0.75);
-        fadingInPlayer.filterNode.gain.setValueAtTime(-40, currentTime);
-        fadingInPlayer.filterNode.gain.linearRampToValueAtTime(0, currentTime + crossfadeDuration * 0.75);
-    }
-
-    // After fade, cleanup and update state
-    setTimeout(() => {
-      cleanupPlayer(fadingOutPlayer);
-      if (fadingOutPlayer.filterNode) fadingOutPlayer.filterNode.gain.value = 0; // Reset EQ
-      
-      activePlayerRef.current = activePlayerRef.current === 'A' ? 'B' : 'A';
-      setCurrentTrackIndex(nextIndex);
-      
-      pausedAtRef.current = 0;
-      startedAtRef.current = currentTime;
-
-      // Schedule next fade
-      if (isAutoDj) {
-        const timeUntilFade = nextTrack.optimalCuePoint - crossfadeDuration;
-        if (timeUntilFade > 0) {
-            fadeTimeoutRef.current = window.setTimeout(() => {
-                crossfade(nextIndex);
-            }, timeUntilFade * 1000);
-        }
-      }
-    }, crossfadeDuration * 1000);
-
-  }, [tracks, volume, isAutoDj, crossfadeDuration, transitionType, cleanupPlayer]);
-
-  const togglePlayPause = useCallback(() => {
-    initializeAudio();
-    if (!audioContextRef.current) return;
-
-    if (isPlaying) {
-      audioContextRef.current.suspend().then(() => {
-        if (audioContextRef.current) pausedAtRef.current = audioContextRef.current.currentTime - startedAtRef.current;
-        if (fadeTimeoutRef.current) clearTimeout(fadeTimeoutRef.current);
-        setIsPlaying(false);
-      });
-    } else {
-      audioContextRef.current.resume();
-      if ((playerARef.current?.sourceNode || playerBRef.current?.sourceNode)) {
-        startedAtRef.current = audioContextRef.current.currentTime - pausedAtRef.current;
-        setIsPlaying(true);
-        // Reschedule fade if in Auto DJ mode
-        const track = tracks[currentTrackIndex];
-        if (isAutoDj && track) {
-            const remainingTime = track.optimalCuePoint - pausedAtRef.current - crossfadeDuration;
-            if (remainingTime > 0) {
-                 fadeTimeoutRef.current = window.setTimeout(() => crossfade(currentTrackIndex), remainingTime * 1000);
-            }
-        }
-      } else if (tracks.length > 0) {
-        playTrack(currentTrackIndex !== -1 ? currentTrackIndex : 0);
-      }
-    }
-  }, [isPlaying, currentTrackIndex, tracks, playTrack, isAutoDj, crossfadeDuration, crossfade, initializeAudio]);
-
-  const skipForward = useCallback(() => {
-    if (tracks.length > 0) {
-      const nextIndex = (currentTrackIndex + 1) % tracks.length;
-      playTrack(nextIndex);
-    }
-  }, [currentTrackIndex, tracks.length, playTrack]);
-
-  const skipBackward = useCallback(() => {
-    if (tracks.length > 0) {
-      const prevIndex = (currentTrackIndex - 1 + tracks.length) % tracks.length;
-      playTrack(prevIndex);
-    }
-  }, [currentTrackIndex, tracks.length, playTrack]);
-  
-  const seek = (value: number) => {
-    if (currentTrackIndex !== -1) {
-      const track = tracks[currentTrackIndex];
-      const newTime = (value / 100) * track.duration;
-      playTrack(currentTrackIndex, newTime);
-    }
+    dispatch({
+      type: 'SET_DECK_STATE',
+      deck,
+      state: {
+        sourceNode: source,
+        isPlaying: true,
+        startTime: audioContext.currentTime,
+      },
+    });
   };
 
-  useEffect(() => {
-    const activePlayer = activePlayerRef.current === 'A' ? playerARef.current : playerBRef.current;
-    if (activePlayer?.gainNode && audioContextRef.current) {
-      activePlayer.gainNode.gain.setValueAtTime(volume, audioContextRef.current.currentTime);
-    }
-  }, [volume]);
-  
-  useEffect(() => {
-    if (isPlaying) {
-      progressIntervalRef.current = window.setInterval(() => {
-        if (audioContextRef.current && currentTrackIndex !== -1 && tracks[currentTrackIndex]) {
-          const elapsedTime = audioContextRef.current.currentTime - startedAtRef.current;
-          const duration = tracks[currentTrackIndex].duration;
-          const newProgress = Math.min((elapsedTime / duration) * 100, 100);
-          setProgress(newProgress);
-        }
-      }, 100);
-    } else if (progressIntervalRef.current) {
-      clearInterval(progressIntervalRef.current);
-    }
-    return () => {
-      if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
-    };
-  }, [isPlaying, currentTrackIndex, tracks]);
+  const pauseDeck = (deck: 'A' | 'B') => {
+    const deckState = deck === 'A' ? state.deckA : state.deckB;
+    if (!deckState.sourceNode || !deckState.isPlaying) return;
 
-  const nextTrackIndex = tracks.length > 1 && currentTrackIndex !== -1 ? (currentTrackIndex + 1) % tracks.length : -1;
+    deckState.sourceNode.stop();
+    const elapsedTime = audioContext.currentTime - deckState.startTime;
+    const newOffset = (deckState.startOffset + elapsedTime) % deckState.track!.duration;
+
+    dispatch({
+      type: 'SET_DECK_STATE',
+      deck,
+      state: {
+        sourceNode: null,
+        isPlaying: false,
+        startOffset: newOffset,
+      },
+    });
+  };
+
+  const handlePlayPause = useCallback(() => {
+    if (state.isPlaying) {
+      if(state.deckA.isPlaying) pauseDeck('A');
+      if(state.deckB.isPlaying) pauseDeck('B');
+      dispatch({ type: 'PAUSE' });
+    } else {
+      if(state.deckA.track) playDeck('A');
+      if(state.deckB.track) playDeck('B');
+      dispatch({ type: 'PLAY' });
+    }
+  }, [state.isPlaying, state.deckA, state.deckB]);
+
+  const loadTrack = useCallback((deck: 'A' | 'B', track: Track) => {
+    const deckKey = deck === 'A' ? 'deckA' : 'deckB';
+    const currentDeck = state[deckKey];
+    if (currentDeck.sourceNode) {
+        currentDeck.sourceNode.stop();
+    }
+    dispatch({ type: 'LOAD_TRACK', deck, track });
+  }, [state.deckA, state.deckB]);
+
+  const setVolume = useCallback((deck: 'A' | 'B', volume: number) => {
+    dispatch({ type: 'SET_VOLUME', deck, volume });
+    // Re-apply crossfade to update gain
+    dispatch({ type: 'SET_CROSSFADE', value: state.crossfade });
+  }, [state.crossfade]);
+
+  const setMasterVolume = useCallback((volume: number) => {
+    dispatch({ type: 'SET_MASTER_VOLUME', volume });
+  }, []);
+
+  const setCrossfade = useCallback((value: number) => {
+    dispatch({ type: 'SET_CROSSFADE', value });
+  }, []);
+  
+  // Connect decks to crossfader
+  useEffect(() => {
+    state.deckA.gainNode.connect(crossfaderNode);
+    state.deckB.gainNode.connect(crossfaderNode);
+    // Set initial crossfade and volume
+    setCrossfade(0);
+    setVolume('A', 1);
+    setVolume('B', 1);
+
+    return () => {
+        state.deckA.gainNode.disconnect();
+        state.deckB.gainNode.disconnect();
+    }
+  }, []);
+
+  useEffect(() => {
+    const updateCurrentTime = () => {
+      if (state.deckA.isPlaying && state.deckA.track) {
+        const elapsedTime = audioContext.currentTime - state.deckA.startTime;
+        const newTime = state.deckA.startOffset + elapsedTime;
+        if(newTime >= state.deckA.track.duration) {
+          pauseDeck('A');
+        } else {
+          setCurrentTimeA(newTime);
+        }
+      }
+      if (state.deckB.isPlaying && state.deckB.track) {
+        const elapsedTime = audioContext.currentTime - state.deckB.startTime;
+        const newTime = state.deckB.startOffset + elapsedTime;
+        if(newTime >= state.deckB.track.duration) {
+            pauseDeck('B');
+        } else {
+            setCurrentTimeB(newTime);
+        }
+      }
+      animationFrameRef.current = requestAnimationFrame(updateCurrentTime);
+    };
+
+    if(state.deckA.isPlaying || state.deckB.isPlaying) {
+      if(!state.isPlaying) dispatch({type: 'PLAY'});
+      animationFrameRef.current = requestAnimationFrame(updateCurrentTime);
+    } else {
+      if(state.isPlaying) dispatch({type: 'PAUSE'});
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+      }
+    }
+    
+    return () => {
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+      }
+    };
+  }, [state.isPlaying, state.deckA, state.deckB]);
 
   return {
-    tracks,
-    addTracks,
-    currentTrackIndex,
-    nextTrackIndex,
-    isPlaying,
-    togglePlayPause,
-    skipForward,
-    skipBackward,
-    volume,
+    ...state,
+    currentTimeA,
+    currentTimeB,
+    masterAnalyserNode,
+    loadTrack,
+    handlePlayPause,
     setVolume,
-    progress,
-    seek,
-    isAutoDj,
-    setIsAutoDj,
-    analyserNodeA: playerARef.current?.analyserNode ?? null,
-    analyserNodeB: playerBRef.current?.analyserNode ?? null,
-    activePlayer: activePlayerRef.current,
-    transitionType,
-    setTransitionType,
+    setMasterVolume,
+    setCrossfade,
   };
 };
