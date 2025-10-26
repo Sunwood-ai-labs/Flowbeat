@@ -40,20 +40,20 @@ export async function getMixPointsFromGemini(
     promptAddendum?: string,
 ): Promise<{ startTime: number; fadeOutTime: number }> {
     const trimmedAddendum = promptAddendum?.trim();
-    const basePrompt = `You are an expert DJ. Analyze the following music track to find the best mix points.
+    const basePrompt = `あなたは熟練のクラブDJです。次の楽曲について、最適なミックス・ポイントを決定してください。
 
-    Track Name: "${trackName}"
-    Total Duration: ${Math.round(duration)} seconds.
+    楽曲名: "${trackName}"
+    総再生時間: 約 ${Math.round(duration)} 秒
 
-    Your task is to identify two key timestamps:
-    1.  **Start Time**: The ideal moment to start the track. This should be right where the main beat or rhythm kicks in, skipping any silence, long ambient intros, or non-rhythmic sections.
-    2.  **Fade-Out Time**: The ideal moment to begin a crossfade to the next track. This should be at the start of the outro, where the song's energy begins to decrease, but before it ends completely.
+    求めるタイムスタンプは以下の2点です。
+    1. **startTime** – 曲を再生し始めるべき最適なタイミング。無音・パッド・長いイントロを避け、ビートやメロディが本格的に立ち上がる地点を選んでください。
+    2. **fadeOutTime** – 次の曲へクロスフェードを開始する最適なタイミング。最後のサビが終わった直後（観客の熱量がピークのうち）に入るポイントを優先し、曲の終端より 10 秒以上手前に設定してください。フェードに使う時間（startTime から fadeOutTime までの長さ）は 8〜16 秒程度を目安にします。
 
-    Constraints:
-    - The startTime must be greater than or equal to 0 and less than the fadeOutTime.
-    - The fadeOutTime must be less than the total duration. A good rule of thumb is that it should be within the last 20% of the track.
+    制約:
+    - startTime は 0 秒以上で、fadeOutTime より必ず小さくすること。
+    - fadeOutTime は曲の総再生時間未満、かつ曲の終端より 10 秒以上手前にすること。
 
-    Provide the response as a JSON object with the specified schema.`;
+    以上の条件に沿って、指定された JSON スキーマで回答してください。`;
     const prompt = trimmedAddendum
         ? `${basePrompt}\n\nAdditional DJ preferences:\n${trimmedAddendum}`
         : basePrompt;

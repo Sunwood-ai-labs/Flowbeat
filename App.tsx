@@ -14,12 +14,66 @@ import PromptSettings from './components/PromptSettings';
 import TransitionTimeline from './components/TransitionTimeline';
 import { cacheMixPoints, getCachedMixPoints, initializeAnalysisCache, clearCachedMixPointsForTrack } from './lib/analysisCache';
 
-const DEFAULT_GEMINI_PROMPT_NOTES = `Prioritize quick transitions. Prefer start points that jump into the main groove within 15 seconds and fade-outs that begin no later than 15 seconds before the end.`;
+const DEFAULT_GEMINI_PROMPT_NOTES = `ミックスはタイトに。次の曲のグルーヴが立ち上がってから 8〜12 秒以内に再生を開始し、最後のサビが終わった瞬間にクロスフェードを開始してください（終端の 12〜18 秒前が目安）。エネルギーが落ちるブレイク中のフェードは避けてください。`;
+
+const useAnalysisCacheReady = () => {
+  const [ready, setReady] = useState(false);
+
+  useEffect(() => {
+    let isMounted = true;
+    initializeAnalysisCache()
+      .catch((error) => {
+        console.warn('Could not load mix point cache from assets.', error);
+      })
+      .finally(() => {
+        if (isMounted) {
+          setReady(true);
+        }
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  return ready;
+};
+
+const normalizeMixPoints = (
+  mixPoints: { startTime: number; fadeOutTime: number },
+  duration: number
+) => {
+  let startTime = Math.max(0, mixPoints.startTime);
+  let fadeOutTime = Math.min(mixPoints.fadeOutTime, duration - 10);
+
+  if (!Number.isFinite(fadeOutTime) || fadeOutTime <= 0) {
+    fadeOutTime = Math.max(duration - 14, duration * 0.85);
+  }
+
+  if (fadeOutTime <= startTime) {
+    fadeOutTime = Math.min(duration - 10, Math.max(startTime + 12, duration * 0.85));
+  }
+
+  const minWindow = 8;
+  const maxWindow = 18;
+  const currentWindow = fadeOutTime - startTime;
+
+  if (currentWindow < minWindow) {
+    startTime = Math.max(0, fadeOutTime - minWindow);
+  } else if (currentWindow > maxWindow) {
+    startTime = Math.max(0, fadeOutTime - maxWindow);
+  }
+
+  return {
+    startTime,
+    fadeOutTime,
+  };
+};
 
 function App() {
   const [tracks, setTracks] = useState<Track[]>([]);
   const [isAutoDj, setIsAutoDj] = useState(false);
   const [geminiPromptNotes, setGeminiPromptNotes] = useState(DEFAULT_GEMINI_PROMPT_NOTES);
+  const cacheReady = useAnalysisCacheReady();
   const getNextReadyTrack = useCallback(
     (currentTrackId: string | null) => {
       const readyTracks = tracks.filter((track) => track.analysisStatus === 'ready');
@@ -52,10 +106,6 @@ function App() {
   );
 
   const mixer = useDjMixer({ isAutoDj, tracks, getNextReadyTrack });
-
-  useEffect(() => {
-    initializeAnalysisCache();
-  }, []);
 
   const handleFilesAdded = useCallback(async (files: FileList) => {
     const newTracks: Track[] = Array.from(files)
@@ -97,6 +147,9 @@ function App() {
   }, [tracks, geminiPromptNotes]);
 
   useEffect(() => {
+    if (!cacheReady) {
+      return;
+    }
     tracks.forEach(track => {
       if (track.analysisStatus === 'pending' && mixer.audioContext) {
 
@@ -128,22 +181,39 @@ function App() {
                     return;
                 }
 
+                if ((import.meta as any)?.env?.DEV) {
+                    console.info('Requesting Gemini mix points', {
+                        track: track.name,
+                        duration: resolvedDuration,
+                        prompt: geminiPromptNotes,
+                    });
+                }
+
                 await toast.promise(
                     getMixPointsFromGemini(track.name, resolvedDuration, geminiPromptNotes),
                     {
                         loading: `Analyzing ${track.name} with Gemini...`,
                         success: (mixPoints) => {
+                            const normalized = normalizeMixPoints(mixPoints, resolvedDuration);
+                            if ((import.meta as any)?.env?.DEV) {
+                                console.info('Gemini mix points', {
+                                    track: track.name,
+                                    prompt: geminiPromptNotes,
+                                    raw: mixPoints,
+                                    normalized,
+                                });
+                            }
                             cacheMixPoints({
                                 file: track.file,
                                 prompt: geminiPromptNotes,
                                 duration: resolvedDuration,
-                                startTime: mixPoints.startTime,
-                                fadeOutTime: mixPoints.fadeOutTime,
+                                startTime: normalized.startTime,
+                                fadeOutTime: normalized.fadeOutTime,
                             });
                             setTracks(prev => prev.map(t => t.id === track.id ? {
                                 ...t,
                                 ...audioAnalysis,
-                                ...mixPoints,
+                                ...normalized,
                                 analysisStatus: 'ready'
                             } : t));
                             return `Analysis for ${track.name} complete!`;
@@ -165,7 +235,7 @@ function App() {
         analyze();
       }
     });
-  }, [tracks, mixer.audioContext, geminiPromptNotes]);
+  }, [tracks, mixer.audioContext, geminiPromptNotes, cacheReady]);
 
   const orderedReadyTracks = useMemo(
     () => tracks.filter((track) => track.analysisStatus === 'ready'),

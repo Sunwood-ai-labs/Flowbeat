@@ -7,14 +7,13 @@ type PromptCacheEntry = {
 
 type CacheStore = Record<string, Record<string, PromptCacheEntry>>;
 
-const CACHE_STORAGE_KEY = 'flowbeat.mixpoints.cache';
 const ASSET_CACHE_URL = '/assets/mixpoints.json';
 
-const isBrowserEnvironment = (): boolean => typeof window !== 'undefined' && typeof window.localStorage !== 'undefined';
+const isBrowserEnvironment = (): boolean => typeof window !== 'undefined';
 
-let inMemoryCache: CacheStore | null = null;
-let initialFileLoaded = false;
-let initialFileLoading: Promise<void> | null = null;
+let inMemoryCache: CacheStore = {};
+let initialized = false;
+let initializationPromise: Promise<void> | null = null;
 
 const hashString = (value: string): string => {
   let hash = 0;
@@ -32,14 +31,6 @@ const getTrackCacheKey = (file: File): string => {
   return parts.join('::');
 };
 
-const mergeCacheStores = (base: CacheStore, override: CacheStore): CacheStore => {
-  const merged: CacheStore = { ...base };
-  Object.entries(override).forEach(([trackKey, promptEntries]) => {
-    merged[trackKey] = { ...(merged[trackKey] ?? {}), ...promptEntries };
-  });
-  return merged;
-};
-
 const safeParse = (raw: string | null): CacheStore => {
   if (!raw) {
     return {};
@@ -51,71 +42,45 @@ const safeParse = (raw: string | null): CacheStore => {
     }
     return {};
   } catch (error) {
-    console.warn('Failed to parse mix point cache; starting fresh.', error);
+    console.warn('Failed to parse mix point cache JSON.', error);
     return {};
   }
 };
 
-const readCache = (): CacheStore => {
-  if (isBrowserEnvironment()) {
-    if (inMemoryCache) {
-      return inMemoryCache;
-    }
-    const raw = window.localStorage.getItem(CACHE_STORAGE_KEY);
-    inMemoryCache = safeParse(raw);
-    return inMemoryCache;
-  }
+const readCache = (): CacheStore => inMemoryCache;
 
-  if (!inMemoryCache) {
-    inMemoryCache = {};
-  }
-  return inMemoryCache;
-};
-
-const writeCache = (cache: CacheStore) => {
-  inMemoryCache = cache;
+const loadCacheFromAsset = async () => {
   if (!isBrowserEnvironment()) {
+    initialized = true;
     return;
   }
+
   try {
-    window.localStorage.setItem(CACHE_STORAGE_KEY, JSON.stringify(cache));
+    const response = await fetch(ASSET_CACHE_URL, { cache: 'no-cache' });
+    if (response.ok) {
+      const text = await response.text();
+      inMemoryCache = safeParse(text);
+    } else {
+      console.warn(`Failed to load mix point cache asset (${response.status}).`);
+      inMemoryCache = {};
+    }
   } catch (error) {
-    console.warn('Failed to persist mix point cache.', error);
+    console.warn('Could not load mix point cache asset.', error);
+    inMemoryCache = {};
+  } finally {
+    initialized = true;
+    initializationPromise = null;
   }
-};
-
-const loadInitialFileCache = async (): Promise<void> => {
-  if (!isBrowserEnvironment() || initialFileLoaded) {
-    return;
-  }
-
-  if (!initialFileLoading) {
-    initialFileLoading = (async () => {
-      try {
-        const response = await fetch(ASSET_CACHE_URL, { cache: 'no-cache' });
-        if (response.ok) {
-          const text = await response.text();
-          const fileCache = safeParse(text);
-          const currentCache = readCache();
-          const merged = mergeCacheStores(fileCache, currentCache);
-          writeCache(merged);
-        } else {
-          console.warn(`Could not load mix point asset cache (${response.status}).`);
-        }
-      } catch (error) {
-        console.warn('Failed to bootstrap mix point cache from asset file.', error);
-      } finally {
-        initialFileLoaded = true;
-        initialFileLoading = null;
-      }
-    })();
-  }
-
-  return initialFileLoading;
 };
 
 export const initializeAnalysisCache = async () => {
-  await loadInitialFileCache();
+  if (initialized) {
+    return;
+  }
+  if (!initializationPromise) {
+    initializationPromise = loadCacheFromAsset();
+  }
+  return initializationPromise;
 };
 
 export const getCachedMixPoints = ({
@@ -174,7 +139,7 @@ export const cacheMixPoints = ({
   };
 
   cache[trackKey] = trackEntry;
-  writeCache(cache);
+  inMemoryCache = cache;
 };
 
 export const clearCachedMixPointsForTrack = (file: File, prompt?: string) => {
@@ -193,13 +158,13 @@ export const clearCachedMixPointsForTrack = (file: File, prompt?: string) => {
       } else {
         cache[trackKey] = rest;
       }
-      writeCache(cache);
+      inMemoryCache = cache;
     }
     return;
   }
 
   delete cache[trackKey];
-  writeCache(cache);
+  inMemoryCache = cache;
 };
 
 export const getCacheSnapshot = (): CacheStore => ({ ...readCache() });
