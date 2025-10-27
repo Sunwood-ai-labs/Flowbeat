@@ -162,9 +162,30 @@ export const getCachedMixPoints = ({
   if (!trackEntry) {
     return null;
   }
-  const promptEntry = trackEntry[promptHash];
+  let promptEntry = trackEntry[promptHash];
   if (!promptEntry) {
-    return null;
+    for (const [altHash, altEntry] of Object.entries(trackEntry)) {
+      if (altHash === promptHash) {
+        continue;
+      }
+      if (Math.abs(altEntry.duration - duration) > toleranceSeconds) {
+        continue;
+      }
+
+      cacheMixPoints({
+        file,
+        prompt,
+        duration: altEntry.duration,
+        startTime: altEntry.startTime,
+        endTime: altEntry.endTime,
+      });
+      promptEntry = altEntry;
+      break;
+    }
+
+    if (!promptEntry) {
+      return null;
+    }
   }
   if (Math.abs(promptEntry.duration - duration) > toleranceSeconds) {
     return null;

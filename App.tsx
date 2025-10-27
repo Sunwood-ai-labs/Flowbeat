@@ -283,23 +283,48 @@ function App() {
     if (!isAutoDj) return;
     if (!orderedReadyTracks.length) return;
 
-    const primary = orderedReadyTracks.find((track) => track.id === deckATrackId) ?? orderedReadyTracks[0];
+    const activeTrack = activeTrackId
+      ? orderedReadyTracks.find((track) => track.id === activeTrackId)
+      : null;
 
-    if (primary && deckATrackId !== primary.id) {
+    const fallbackTrack =
+      orderedReadyTracks.find((track) => track.id === deckATrackId) ??
+      orderedReadyTracks.find((track) => track.id === deckBTrackId) ??
+      orderedReadyTracks[0];
+
+    const primary = activeTrack ?? fallbackTrack;
+    if (!primary) return;
+
+    const primaryDeck =
+      deckATrackId === primary.id ? 'A' :
+      deckBTrackId === primary.id ? 'B' :
+      null;
+
+    if (!primaryDeck) {
       loadTrack('A', primary);
       return;
     }
 
-    const nextAuto = primary ? getNextReadyTrack(primary.id) : null;
+    const nextAuto = getNextReadyTrack(primary.id);
+    const otherDeck = primaryDeck === 'A' ? 'B' : 'A';
+    const otherDeckId = otherDeck === 'A' ? deckATrackId : deckBTrackId;
 
     if (nextAuto) {
-      if (deckBTrackId !== nextAuto.id) {
-        loadTrack('B', nextAuto);
+      if (otherDeckId !== nextAuto.id) {
+        loadTrack(otherDeck, nextAuto);
       }
-    } else if (deckBTrackId) {
-      loadTrack('B', null);
+    } else if (otherDeckId) {
+      loadTrack(otherDeck, null);
     }
-  }, [isAutoDj, orderedReadyTracks, deckATrackId, deckBTrackId, getNextReadyTrack, loadTrack]);
+  }, [
+    isAutoDj,
+    orderedReadyTracks,
+    activeTrackId,
+    deckATrackId,
+    deckBTrackId,
+    getNextReadyTrack,
+    loadTrack,
+  ]);
 
   const handleRemoveTrack = (trackId: string) => {
     const target = tracks.find((t) => t.id === trackId);

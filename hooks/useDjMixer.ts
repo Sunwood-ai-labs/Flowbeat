@@ -219,7 +219,7 @@ export const useDjMixer = ({
       if (isAutoDj && activeDeck && !autoDjState.current.isFading) {
         const activeDeckState = activeDeck === 'A' ? state.deckA : state.deckB;
         const currentTime = activeDeck === 'A' ? currentTimeA : currentTimeB;
-        
+
         if (activeDeckState.track?.endTime && currentTime >= activeDeckState.track.endTime) {
           const nextDeck: 'A' | 'B' = activeDeck === 'A' ? 'B' : 'A';
             const nextDeckState = nextDeck === 'A' ? state.deckA : state.deckB;
@@ -278,10 +278,23 @@ export const useDjMixer = ({
 
             setTimeout(() => {
               // Gives a moment for the track to load
+              const now = audioContext.currentTime;
+              const upcomingGainNode = nextDeck === 'A' ? state.deckA.gainNode : state.deckB.gainNode;
+              const currentGainNode = activeDeck === 'A' ? state.deckA.gainNode : state.deckB.gainNode;
+              const currentVolume = activeDeck === 'A' ? state.deckA.volume : state.deckB.volume;
+
+              upcomingGainNode.gain.cancelScheduledValues(now);
+              upcomingGainNode.gain.setValueAtTime(0, now);
+
+              currentGainNode.gain.cancelScheduledValues(now);
+              currentGainNode.gain.setValueAtTime(currentVolume, now);
+
+              const start = activeDeck === 'A' ? -1 : 1;
+              setCrossfade(start);
+
               playDeck(nextDeck, nextTrack!.startTime ?? 0);
 
               const targetFade = nextDeck === 'B' ? 1 : -1;
-              const start = state.crossfade;
               const fadeStartTime = performance.now();
 
               const animateFade = (now: number) => {
@@ -305,7 +318,7 @@ export const useDjMixer = ({
 
       if(state.deckA.track && currentTimeA >= state.deckA.track.duration) pauseDeck('A');
       if(state.deckB.track && currentTimeB >= state.deckB.track.duration) pauseDeck('B');
-      
+
       animationFrameRef.current = requestAnimationFrame(update);
     };
 
@@ -316,7 +329,7 @@ export const useDjMixer = ({
       if(state.isPlaying) dispatch({type: 'PAUSE'});
       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
     }
-    
+
     return () => { if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current); };
   }, [state.isPlaying, state.deckA, state.deckB, isAutoDj, tracks, loadTrack, pauseDeck, playDeck, setCrossfade, audioContext, getNextReadyTrack]);
 
