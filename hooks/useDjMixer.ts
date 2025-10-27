@@ -1,7 +1,7 @@
 import { useReducer, useRef, useState, useCallback, useEffect } from 'react';
 import { Deck, Track } from '../types';
 
-const CROSSFADE_DURATION = 10; // seconds
+export const CROSSFADE_DURATION = 10; // seconds
 
 const createNewDeck = (audioContext: AudioContext): Deck => {
   const gainNode = audioContext.createGain();
@@ -92,7 +92,7 @@ export const useDjMixer = ({
     const initialState: MixerState = {
         deckA: createNewDeck(audioContext),
         deckB: createNewDeck(audioContext),
-        crossfade: 0,
+        crossfade: -1,
         isPlaying: false,
     };
     
@@ -110,29 +110,62 @@ export const useDjMixer = ({
   const [state, dispatch] = useReducer(mixerReducer, initialState);
 
   const animationFrameRef = useRef<number | null>(null);
+  const fadeAnimationRef = useRef<number | null>(null);
+  const debugLog = useCallback((label: string, payload: Record<string, unknown> = {}) => {
+    console.info('[Flowbeat][AutoDJ]', label, payload);
+  }, []);
+  const lastCrossfadeLogRef = useRef(initialState.crossfade);
+  const lastTimeLogRef = useRef<{ A: number; B: number }>({ A: -Infinity, B: -Infinity });
+  useEffect(() => {
+    lastCrossfadeLogRef.current = state.crossfade;
+  }, [state.crossfade]);
   const [currentTimeA, setCurrentTimeA] = useState(0);
   const [currentTimeB, setCurrentTimeB] = useState(0);
-  const autoDjState = useRef({ isFading: false });
+  const autoDjState = useRef<{
+    isFading: boolean;
+    lastFadeTrackId: string | null;
+    lastFadeTriggerLogTrackId: string | null;
+  }>({ isFading: false, lastFadeTrackId: null, lastFadeTriggerLogTrackId: null });
 
-  const playDeck = useCallback((deck: 'A' | 'B', offset?: number) => {
+  const playDeck = useCallback((deck: 'A' | 'B', params?: { offset?: number; track?: Track }) => {
     if (audioContext.state === 'suspended') {
       audioContext.resume();
     }
     const deckState = deck === 'A' ? state.deckA : state.deckB;
-    if (!deckState.track || deckState.isPlaying) return;
+    const track = params?.track ?? deckState.track;
+    if (!track) {
+      debugLog('deck:play-missing-track', { deck });
+      return;
+    }
+    if (deckState.isPlaying) {
+      debugLog('deck:play-skip-already-playing', { deck, track: track.name });
+      return;
+    }
 
     const source = audioContext.createBufferSource();
-    source.buffer = deckState.track.audioBuffer;
+    source.buffer = track.audioBuffer;
     source.connect(deckState.gainNode);
-    const startOffset = offset ?? deckState.startOffset;
-    source.start(0, startOffset % deckState.track.duration);
+    const chosenOffset = params?.offset ?? deckState.startOffset;
+    source.start(0, chosenOffset % Math.max(track.duration, 0.001));
+
+    debugLog('deck:play', {
+      deck,
+      track: track.name,
+      offset: chosenOffset,
+    });
 
     dispatch({
       type: 'SET_DECK_STATE',
       deck,
-      state: { sourceNode: source, isPlaying: true, startTime: audioContext.currentTime, startOffset },
+      state: {
+        sourceNode: source,
+        isPlaying: true,
+        startTime: audioContext.currentTime,
+        startOffset: chosenOffset,
+        track,
+      },
     });
-  }, [state.deckA, state.deckB, audioContext]);
+  }, [state.deckA, state.deckB, audioContext, debugLog]);
 
   const pauseDeck = useCallback((deck: 'A' | 'B') => {
     const deckState = deck === 'A' ? state.deckA : state.deckB;
@@ -142,12 +175,18 @@ export const useDjMixer = ({
     const elapsedTime = audioContext.currentTime - deckState.startTime;
     const newOffset = (deckState.startOffset + elapsedTime);
 
+    debugLog('deck:pause', {
+      deck,
+      track: deckState.track?.name,
+      elapsedTime,
+    });
+
     dispatch({
       type: 'SET_DECK_STATE',
       deck,
       state: { sourceNode: null, isPlaying: false, startOffset: newOffset >= deckState.track!.duration ? 0 : newOffset },
     });
-  }, [state.deckA, state.deckB, audioContext]);
+  }, [state.deckA, state.deckB, audioContext, debugLog]);
 
   const handlePlayPause = useCallback(() => {
     if (state.isPlaying) {
@@ -169,16 +208,25 @@ export const useDjMixer = ({
     if (currentDeck.sourceNode) {
         currentDeck.sourceNode.stop(0);
     }
+    debugLog('deck:load', {
+      deck,
+      track: track?.name ?? null,
+    });
     dispatch({ type: 'LOAD_TRACK', deck, track });
-  }, [state.deckA, state.deckB]);
+  }, [state.deckA, state.deckB, debugLog]);
 
   const setVolume = useCallback((deck: 'A' | 'B', volume: number) => {
+    debugLog('deck:set-volume', { deck, volume });
     dispatch({ type: 'SET_VOLUME', deck, volume });
-  }, []);
+  }, [debugLog]);
 
   const setCrossfade = useCallback((value: number) => {
+    if (Math.abs(lastCrossfadeLogRef.current - value) > 0.02) {
+      debugLog('crossfade:set', { value });
+      lastCrossfadeLogRef.current = value;
+    }
     dispatch({ type: 'SET_CROSSFADE', value });
-  }, []);
+  }, [debugLog]);
   
   // Connect decks to crossfader
   useEffect(() => {
@@ -216,102 +264,222 @@ export const useDjMixer = ({
       setCurrentTimeA(currentTimeA);
       setCurrentTimeB(currentTimeB);
 
-      if (isAutoDj && activeDeck && !autoDjState.current.isFading) {
+      if (isAutoDj && activeDeck) {
         const activeDeckState = activeDeck === 'A' ? state.deckA : state.deckB;
         const currentTime = activeDeck === 'A' ? currentTimeA : currentTimeB;
+        const track = activeDeckState.track;
 
-        if (activeDeckState.track?.endTime && currentTime >= activeDeckState.track.endTime) {
+        if (track) {
+          if (audioContext.currentTime - lastTimeLogRef.current[activeDeck] >= 1) {
+            lastTimeLogRef.current[activeDeck] = audioContext.currentTime;
+            debugLog('deck:time', {
+              deck: activeDeck,
+              track: track.name,
+              currentTime,
+              windowStart: track.startTime ?? 0,
+              windowEnd: track.endTime ?? track.duration ?? null,
+            });
+          }
+        } else {
+          autoDjState.current.lastFadeTriggerLogTrackId = null;
+        }
+
+        if (!autoDjState.current.isFading && track) {
+          const trackStart = track.startTime ?? 0;
+          const trackEnd = track.endTime ?? track.duration ?? null;
+          const mixWindow = trackEnd !== null ? Math.max(trackEnd - trackStart, 0) : 0;
+          const fadeLead = trackEnd !== null && mixWindow > 0
+            ? Math.min(CROSSFADE_DURATION, mixWindow)
+            : 0;
+          const triggerTime = trackEnd !== null ? trackEnd - fadeLead : Number.POSITIVE_INFINITY;
+          const timeUntilFade = triggerTime - currentTime;
+
           const nextDeck: 'A' | 'B' = activeDeck === 'A' ? 'B' : 'A';
-            const nextDeckState = nextDeck === 'A' ? state.deckA : state.deckB;
+          const nextDeckState = nextDeck === 'A' ? state.deckA : state.deckB;
 
-          const candidateFromCallback = getNextReadyTrack
-            ? getNextReadyTrack(activeDeckState.track?.id ?? null)
-            : undefined;
+          if (fadeLead <= 0 || trackEnd === null) {
+            if (timeUntilFade <= 0) {
+              debugLog('fade:skip-no-window', {
+                deck: activeDeck,
+                track: track.name,
+                trackStart,
+                trackEnd,
+                mixWindow,
+              });
+            }
+          } else {
+            if (timeUntilFade <= 3 && autoDjState.current.lastFadeTriggerLogTrackId !== track.id) {
+              const previewNext = getNextReadyTrack
+                ? getNextReadyTrack(track.id)
+                : tracks.find((candidate) => candidate.analysisStatus === 'ready' && candidate.id !== track.id) ?? null;
 
-          let nextTrack: Track | undefined;
+              debugLog('fade:arming', {
+                deck: activeDeck,
+                track: track.name,
+                timeUntilFade,
+                triggerTime,
+                fadeLead,
+                nextReady: previewNext?.name ?? null,
+              });
+              autoDjState.current.lastFadeTriggerLogTrackId = track.id;
+            }
 
-          if (candidateFromCallback && candidateFromCallback.id !== activeDeckState.track?.id) {
-            nextTrack = candidateFromCallback;
-          } else if (
-            nextDeckState.track &&
-            nextDeckState.track.analysisStatus === 'ready' &&
-            nextDeckState.track.id !== activeDeckState.track?.id
-          ) {
-            nextTrack = nextDeckState.track;
-          } else if (activeDeckState.track) {
-            const currentIndex = tracks.findIndex((t) => t.id === activeDeckState.track!.id);
+            if (timeUntilFade <= 0) {
+              autoDjState.current.lastFadeTriggerLogTrackId = null;
 
-            const findFrom = (start: number, end: number, step: number) => {
-              for (let i = start; i !== end; i += step) {
-                const candidate = tracks[i];
-                if (
-                  candidate &&
-                  candidate.analysisStatus === 'ready' &&
-                  candidate.id !== activeDeckState.track!.id
-                ) {
-                  return candidate;
+              let nextTrack: Track | undefined = undefined;
+              const callbackCandidate = getNextReadyTrack
+                ? getNextReadyTrack(track.id)
+                : undefined;
+
+              if (callbackCandidate && callbackCandidate.id !== track.id) {
+                nextTrack = callbackCandidate;
+              } else if (
+                nextDeckState.track &&
+                nextDeckState.track.analysisStatus === 'ready' &&
+                nextDeckState.track.id !== track.id
+              ) {
+                nextTrack = nextDeckState.track;
+              } else {
+                const currentIndex = tracks.findIndex((t) => t.id === track.id);
+
+                const findFrom = (start: number, end: number, step: number) => {
+                  for (let i = start; i !== end; i += step) {
+                    const candidate = tracks[i];
+                    if (
+                      candidate &&
+                      candidate.analysisStatus === 'ready' &&
+                      candidate.id !== track.id
+                    ) {
+                      return candidate;
+                    }
+                  }
+                  return undefined;
+                };
+
+                if (currentIndex >= 0) {
+                  nextTrack =
+                    findFrom(currentIndex + 1, tracks.length, 1) ??
+                    findFrom(0, currentIndex, 1);
+                } else {
+                  nextTrack = tracks.find(
+                    (candidate) => candidate.analysisStatus === 'ready'
+                  );
                 }
               }
-              return undefined;
-            };
 
-            if (currentIndex >= 0) {
-              nextTrack =
-                findFrom(currentIndex + 1, tracks.length, 1) ??
-                findFrom(0, currentIndex, 1);
-            } else {
-              nextTrack = tracks.find(
-                (candidate) => candidate.analysisStatus === 'ready'
-              );
-            }
-          }
+              if (nextTrack && nextTrack.id === track.id) {
+                debugLog('fade:skip-same-track', {
+                  activeDeck,
+                  candidate: nextTrack?.name,
+                });
+                nextTrack = undefined;
+              }
 
-            if (nextTrack && nextTrack.id === activeDeckState.track?.id) {
-            nextTrack = undefined;
-          }
+              if (!nextTrack) {
+                debugLog('fade:no-next-track', {
+                  activeDeck,
+                });
+              }
 
-          if (nextTrack) {
-            autoDjState.current.isFading = true;
-            if (nextDeckState.track?.id !== nextTrack.id) {
-              loadTrack(nextDeck, nextTrack);
-            }
+              if (nextTrack) {
+                autoDjState.current.isFading = true;
+                autoDjState.current.lastFadeTrackId = track.id;
+                debugLog('fade:trigger', {
+                  deck: activeDeck,
+                  track: track.name,
+                  currentTime,
+                  triggerTime,
+                  fadeLead,
+                  nextDeck,
+                  nextTrack: nextTrack.name,
+                });
 
-            setTimeout(() => {
-              // Gives a moment for the track to load
-              const now = audioContext.currentTime;
-              const upcomingGainNode = nextDeck === 'A' ? state.deckA.gainNode : state.deckB.gainNode;
-              const currentGainNode = activeDeck === 'A' ? state.deckA.gainNode : state.deckB.gainNode;
-              const currentVolume = activeDeck === 'A' ? state.deckA.volume : state.deckB.volume;
-
-              upcomingGainNode.gain.cancelScheduledValues(now);
-              upcomingGainNode.gain.setValueAtTime(0, now);
-
-              currentGainNode.gain.cancelScheduledValues(now);
-              currentGainNode.gain.setValueAtTime(currentVolume, now);
-
-              const start = activeDeck === 'A' ? -1 : 1;
-              setCrossfade(start);
-
-              playDeck(nextDeck, nextTrack!.startTime ?? 0);
-
-              const targetFade = nextDeck === 'B' ? 1 : -1;
-              const fadeStartTime = performance.now();
-
-              const animateFade = (now: number) => {
-                const elapsed = (now - fadeStartTime) / 1000;
-                const progress = Math.min(elapsed / CROSSFADE_DURATION, 1);
-                const newValue = start + (targetFade - start) * progress;
-                setCrossfade(newValue);
-                if (progress < 1) {
-                  requestAnimationFrame(animateFade);
-                } else {
-                  pauseDeck(activeDeck!);
-                  loadTrack(activeDeck!, null);
-                  autoDjState.current.isFading = false;
+                if (nextDeckState.track?.id !== nextTrack.id) {
+                  loadTrack(nextDeck, nextTrack);
                 }
-              };
-              requestAnimationFrame(animateFade);
-            }, 100);
+
+                setTimeout(() => {
+                  const now = audioContext.currentTime;
+                  const upcomingGainNode = nextDeck === 'A' ? state.deckA.gainNode : state.deckB.gainNode;
+                  const currentGainNode = activeDeck === 'A' ? state.deckA.gainNode : state.deckB.gainNode;
+                  const currentVolume = activeDeck === 'A' ? state.deckA.volume : state.deckB.volume;
+
+                  upcomingGainNode.gain.cancelScheduledValues(now);
+                  upcomingGainNode.gain.setValueAtTime(0, now);
+
+                  currentGainNode.gain.cancelScheduledValues(now);
+                  currentGainNode.gain.setValueAtTime(currentVolume, now);
+
+                  const start = activeDeck === 'A' ? -1 : 1;
+                  if (Math.abs(state.crossfade - start) > 0.01) {
+                    debugLog('crossfade:align', {
+                      from: state.crossfade,
+                      to: start,
+                      activeDeck,
+                      nextDeck,
+                    });
+                    setCrossfade(start);
+                  } else {
+                    debugLog('crossfade:align-skip', {
+                      preserved: state.crossfade,
+                      expected: start,
+                    });
+                  }
+
+                  playDeck(nextDeck, {
+                    offset: nextTrack!.startTime ?? 0,
+                    track: nextTrack!,
+                  });
+                  debugLog('fade:play-next-track', {
+                    deck: nextDeck,
+                    track: nextTrack.name,
+                    offset: nextTrack.startTime ?? 0,
+                  });
+
+                  const targetFade = nextDeck === 'B' ? 1 : -1;
+                  const fadeStartTime = performance.now();
+
+                  if (fadeAnimationRef.current !== null) {
+                    cancelAnimationFrame(fadeAnimationRef.current);
+                    fadeAnimationRef.current = null;
+                  }
+
+                  let loggedStart = false;
+
+                  const animateFade = (now: number) => {
+                    const elapsed = (now - fadeStartTime) / 1000;
+                    const progress = Math.min(elapsed / CROSSFADE_DURATION, 1);
+                    const newValue = start + (targetFade - start) * progress;
+                    if (!loggedStart) {
+                      debugLog('fade:animate-start', {
+                        start,
+                        target: targetFade,
+                        initialProgress: progress,
+                      });
+                      loggedStart = true;
+                    }
+                    setCrossfade(newValue);
+                    if (progress < 1) {
+                      fadeAnimationRef.current = requestAnimationFrame(animateFade);
+                    } else {
+                      pauseDeck(activeDeck!);
+                      loadTrack(activeDeck!, null);
+                      autoDjState.current.isFading = false;
+                      autoDjState.current.lastFadeTrackId = null;
+                      fadeAnimationRef.current = null;
+                      debugLog('fade:complete', {
+                        finalValue: targetFade,
+                        nextDeck,
+                        nextTrack: nextTrack?.name,
+                      });
+                    }
+                  };
+
+                  fadeAnimationRef.current = requestAnimationFrame(animateFade);
+                }, 100);
+              }
+            }
           }
         }
       }
@@ -330,8 +498,16 @@ export const useDjMixer = ({
       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
     }
 
-    return () => { if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current); };
-  }, [state.isPlaying, state.deckA, state.deckB, isAutoDj, tracks, loadTrack, pauseDeck, playDeck, setCrossfade, audioContext, getNextReadyTrack]);
+    return () => {
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+      }
+      if (fadeAnimationRef.current) {
+        cancelAnimationFrame(fadeAnimationRef.current);
+        fadeAnimationRef.current = null;
+      }
+    };
+  }, [state.isPlaying, state.deckA, state.deckB, state.crossfade, isAutoDj, tracks, loadTrack, pauseDeck, playDeck, setCrossfade, audioContext, getNextReadyTrack, debugLog]);
 
   return {
     ...state,

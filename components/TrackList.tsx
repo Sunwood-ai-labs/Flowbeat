@@ -7,8 +7,8 @@ import { formatDuration } from '../lib/utils';
 
 interface TrackListProps {
   tracks: Track[];
-  onLoadToDeckA: (track: Track) => void;
-  onLoadToDeckB: (track: Track) => void;
+  activeTrackId: string | null;
+  nextTrackId: string | null;
   onRemoveTrack: (trackId: string) => void;
   onReanalyzeTrack: (trackId: string) => void;
 }
@@ -67,11 +67,11 @@ const MixPointVisualization: React.FC<{ track: Track }> = ({ track }) => {
 };
 
 
-const TrackList: React.FC<TrackListProps> = ({ tracks, onLoadToDeckA, onLoadToDeckB, onRemoveTrack, onReanalyzeTrack }) => {
+const TrackList: React.FC<TrackListProps> = ({ tracks, activeTrackId, nextTrackId, onRemoveTrack, onReanalyzeTrack }) => {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Track Library</CardTitle>
+        <CardTitle>AI DJ Library</CardTitle>
       </CardHeader>
       <CardContent>
         {tracks.length === 0 ? (
@@ -79,10 +79,31 @@ const TrackList: React.FC<TrackListProps> = ({ tracks, onLoadToDeckA, onLoadToDe
         ) : (
           <ul className="space-y-2 max-h-96 overflow-y-auto">
             {tracks.map((track) => (
-              <li key={track.id} className="flex items-center gap-4 p-2 rounded-md hover:bg-accent">
+              <li
+                key={track.id}
+                className={`flex items-center gap-4 p-2 rounded-md transition-colors ${
+                  track.id === activeTrackId
+                    ? 'bg-primary/10 border border-primary/40'
+                    : track.id === nextTrackId
+                    ? 'bg-secondary/10 border border-secondary/30'
+                    : 'hover:bg-accent'
+                }`}
+              >
                 <TrackStatusIndicator status={track.analysisStatus} />
                 <div className="flex-1 min-w-0">
-                  <p className="font-medium truncate" title={track.name}>{track.name}</p>
+                  <div className="flex items-center gap-2">
+                    <p className="font-medium truncate" title={track.name}>{track.name}</p>
+                    {track.id === activeTrackId && (
+                      <span className="rounded-full bg-primary/20 px-2 py-0.5 text-xs font-semibold text-primary-foreground/80">
+                        Now Playing
+                      </span>
+                    )}
+                    {track.id === nextTrackId && track.id !== activeTrackId && (
+                      <span className="rounded-full bg-secondary/20 px-2 py-0.5 text-xs font-semibold text-secondary-foreground/80">
+                        Up Next
+                      </span>
+                    )}
+                  </div>
                   {track.analysisStatus === 'ready' && (
                     <>
                       <p className="text-sm text-muted-foreground">{formatDuration(track.duration)}</p>
@@ -100,12 +121,6 @@ const TrackList: React.FC<TrackListProps> = ({ tracks, onLoadToDeckA, onLoadToDe
                     disabled={track.analysisStatus === 'analyzing'}
                   >
                     再解析
-                  </Button>
-                  <Button variant="outline" size="sm" onClick={() => onLoadToDeckA(track)} disabled={track.analysisStatus !== 'ready'}>
-                    Deck A
-                  </Button>
-                  <Button variant="outline" size="sm" onClick={() => onLoadToDeckB(track)} disabled={track.analysisStatus !== 'ready'}>
-                    Deck B
                   </Button>
                   <Button variant="ghost" size="icon" onClick={() => onRemoveTrack(track.id)}>
                     <TrashIcon className="w-4 h-4" />
