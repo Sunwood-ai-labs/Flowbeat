@@ -220,9 +220,9 @@ export const useDjMixer = ({
         const activeDeckState = activeDeck === 'A' ? state.deckA : state.deckB;
         const currentTime = activeDeck === 'A' ? currentTimeA : currentTimeB;
         
-        if (activeDeckState.track?.fadeOutTime && currentTime >= activeDeckState.track.fadeOutTime) {
+        if (activeDeckState.track?.endTime && currentTime >= activeDeckState.track.endTime) {
           const nextDeck: 'A' | 'B' = activeDeck === 'A' ? 'B' : 'A';
-          const nextDeckState = nextDeck === 'A' ? state.deckA : state.deckB;
+            const nextDeckState = nextDeck === 'A' ? state.deckA : state.deckB;
 
           const candidateFromCallback = getNextReadyTrack
             ? getNextReadyTrack(activeDeckState.track?.id ?? null)
@@ -266,7 +266,7 @@ export const useDjMixer = ({
             }
           }
 
-          if (nextTrack && nextTrack.id === activeDeckState.track?.id) {
+            if (nextTrack && nextTrack.id === activeDeckState.track?.id) {
             nextTrack = undefined;
           }
 

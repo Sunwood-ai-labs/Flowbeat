@@ -14,7 +14,7 @@ import PromptSettings from './components/PromptSettings';
 import TransitionTimeline from './components/TransitionTimeline';
 import { cacheMixPoints, getCachedMixPoints, initializeAnalysisCache, clearCachedMixPointsForTrack } from './lib/analysisCache';
 
-const DEFAULT_GEMINI_PROMPT_NOTES = `ミックスはタイトに。次の曲のグルーヴが立ち上がってから 8〜12 秒以内に再生を開始し、最後のサビが終わった瞬間にクロスフェードを開始してください（終端の 12〜18 秒前が目安）。エネルギーが落ちるブレイク中のフェードは避けてください。`;
+const DEFAULT_GEMINI_PROMPT_NOTES = `ミックス用ではなく、次の処理に渡す再生区間を出してほしいよ。長いイントロは避け、ビートやメロが立ち上がるポイントを startTime に。フェード処理は別ツールが担当だから endTime は「再生を止めたい位置」だけ教えて。startTime から endTime までの尺は 30〜120 秒に収めてね。`;
 
 const useAnalysisCacheReady = () => {
   const [ready, setReady] = useState(false);
@@ -39,33 +39,44 @@ const useAnalysisCacheReady = () => {
 };
 
 const normalizeMixPoints = (
-  mixPoints: { startTime: number; fadeOutTime: number },
+  mixPoints: { startTime: number; endTime: number },
   duration: number
 ) => {
+  const safeDuration = Number.isFinite(duration) && duration > 0 ? duration : 0;
   let startTime = Math.max(0, mixPoints.startTime);
-  let fadeOutTime = Math.min(mixPoints.fadeOutTime, duration - 10);
+  let endTime = Math.min(Math.max(mixPoints.endTime, startTime), safeDuration);
 
-  if (!Number.isFinite(fadeOutTime) || fadeOutTime <= 0) {
-    fadeOutTime = Math.max(duration - 14, duration * 0.85);
+  if (!Number.isFinite(startTime) || startTime >= safeDuration) {
+    startTime = Math.max(0, safeDuration - 60);
   }
 
-  if (fadeOutTime <= startTime) {
-    fadeOutTime = Math.min(duration - 10, Math.max(startTime + 12, duration * 0.85));
+  if (!Number.isFinite(endTime) || endTime <= startTime) {
+    endTime = Math.min(safeDuration, startTime + 90);
   }
 
-  const minWindow = 8;
-  const maxWindow = 18;
-  const currentWindow = fadeOutTime - startTime;
+  const minWindow = 20;
+  const maxWindow = 120;
+  let windowSize = endTime - startTime;
 
-  if (currentWindow < minWindow) {
-    startTime = Math.max(0, fadeOutTime - minWindow);
-  } else if (currentWindow > maxWindow) {
-    startTime = Math.max(0, fadeOutTime - maxWindow);
+  if (windowSize < minWindow) {
+    endTime = Math.min(safeDuration, startTime + minWindow);
+    windowSize = endTime - startTime;
+  }
+
+  if (windowSize > maxWindow) {
+    endTime = Math.min(safeDuration, startTime + maxWindow);
+    windowSize = endTime - startTime;
+  }
+
+  if (endTime > safeDuration) {
+    const overflow = endTime - safeDuration;
+    startTime = Math.max(0, startTime - overflow);
+    endTime = safeDuration;
   }
 
   return {
     startTime,
-    fadeOutTime,
+    endTime,
   };
 };
 
@@ -145,7 +156,7 @@ function App() {
               ...t,
               analysisStatus: 'pending',
               startTime: undefined,
-              fadeOutTime: undefined,
+              endTime: undefined,
             }
           : t
       )
@@ -186,7 +197,7 @@ function App() {
                             track: track.name,
                             prompt: geminiPromptNotes,
                             startTime: cachedMix.startTime,
-                            fadeOutTime: cachedMix.fadeOutTime,
+                            endTime: cachedMix.endTime,
                         });
                     }
                     setTracks(prev => prev.map(t => t.id === track.id ? {
@@ -226,7 +237,7 @@ function App() {
                                 prompt: geminiPromptNotes,
                                 duration: resolvedDuration,
                                 startTime: normalized.startTime,
-                                fadeOutTime: normalized.fadeOutTime,
+                                endTime: normalized.endTime,
                             });
                             setTracks(prev => prev.map(t => t.id === track.id ? {
                                 ...t,

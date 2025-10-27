@@ -32,30 +32,30 @@ const MixPointVisualization: React.FC<{ track: Track }> = ({ track }) => {
     typeof track.duration !== 'number' ||
     !track.duration ||
     typeof track.startTime !== 'number' ||
-    typeof track.fadeOutTime !== 'number'
+    typeof track.endTime !== 'number'
   ) {
     return null;
   }
 
   const startPercent = Math.max(0, Math.min(1, track.startTime / track.duration)) * 100;
-  const fadePercent = Math.max(0, Math.min(1, track.fadeOutTime / track.duration)) * 100;
-  const blendWindow = Math.max(track.fadeOutTime - track.startTime, 0);
+  const endPercent = Math.max(0, Math.min(1, track.endTime / track.duration)) * 100;
+  const segmentLength = Math.max(track.endTime - track.startTime, 0);
 
   return (
     <div className="mt-2 space-y-1">
       <div className="flex items-center justify-between text-[11px] uppercase tracking-wide text-muted-foreground">
         <span>Start {formatDuration(track.startTime)}</span>
-        <span>Blend {formatDuration(blendWindow)}</span>
-        <span>Fade {formatDuration(track.fadeOutTime)}</span>
+        <span>Length {formatDuration(segmentLength)}</span>
+        <span>End {formatDuration(track.endTime)}</span>
       </div>
       <div className="relative h-2 rounded-full bg-muted/60">
         <div
           className="absolute inset-y-0 left-0 bg-primary/30"
-          style={{ width: `${fadePercent}%` }}
+          style={{ width: `${endPercent}%` }}
         />
         <div
           className="absolute inset-y-0 bg-destructive/25"
-          style={{ left: `${fadePercent}%`, right: 0 }}
+          style={{ left: `${endPercent}%`, right: 0 }}
         />
         <div
           className="absolute top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-background bg-primary shadow"

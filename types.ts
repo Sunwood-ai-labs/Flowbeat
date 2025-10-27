@@ -6,7 +6,7 @@ export interface Track {
   audioBuffer: AudioBuffer;
   analysisStatus: 'pending' | 'analyzing' | 'ready' | 'error';
   startTime?: number;
-  fadeOutTime?: number;
+  endTime?: number;
 }
 
 export interface Deck {

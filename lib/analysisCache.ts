@@ -1,6 +1,6 @@
 type PromptCacheEntry = {
   startTime: number;
-  fadeOutTime: number;
+  endTime: number;
   duration: number;
   updatedAt: number;
 };
@@ -154,7 +154,7 @@ export const getCachedMixPoints = ({
   prompt: string;
   duration: number;
   toleranceSeconds?: number;
-}): { startTime: number; fadeOutTime: number } | null => {
+}): { startTime: number; endTime: number } | null => {
   const cache = readCache();
   const trackKey = getTrackCacheKey(file);
   const promptHash = getPromptHash(prompt);
@@ -170,7 +170,7 @@ export const getCachedMixPoints = ({
     return null;
   }
 
-  return { startTime: promptEntry.startTime, fadeOutTime: promptEntry.fadeOutTime };
+  return { startTime: promptEntry.startTime, endTime: promptEntry.endTime };
 };
 
 export const cacheMixPoints = ({
@@ -178,13 +178,13 @@ export const cacheMixPoints = ({
   prompt,
   duration,
   startTime,
-  fadeOutTime,
+  endTime,
 }: {
   file: File;
   prompt: string;
   duration: number;
   startTime: number;
-  fadeOutTime: number;
+  endTime: number;
 }) => {
   const cache = { ...readCache() };
   const trackKey = getTrackCacheKey(file);
@@ -195,7 +195,7 @@ export const cacheMixPoints = ({
   trackEntry[promptHash] = {
     duration,
     startTime,
-    fadeOutTime,
+    endTime,
     updatedAt: Date.now(),
   };
 
@@ -205,7 +205,7 @@ export const cacheMixPoints = ({
     trackKey,
     promptHash,
     startTime,
-    fadeOutTime,
+    endTime,
   });
   scheduleAssetSync();
 };

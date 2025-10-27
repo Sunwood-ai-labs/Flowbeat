@@ -3,7 +3,7 @@
     "7bj9j1": {
       "duration": 234.95997916666667,
       "startTime": 202,
-      "fadeOutTime": 220,
+      "endTime": 220,
       "updatedAt": 1761500529904
     }
   },
@@ -11,7 +11,7 @@
     "7bj9j1": {
       "duration": 113.59997916666667,
       "startTime": 82,
-      "fadeOutTime": 100,
+      "endTime": 100,
       "updatedAt": 1761500538347
     }
   }

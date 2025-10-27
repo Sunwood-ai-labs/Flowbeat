@@ -24,9 +24,9 @@ const TransitionTimeline: React.FC<TransitionTimelineProps> = ({
 }) => {
   const renderTrack = (track: Track) => {
     const start = track.startTime ?? 0;
-    const fadeOut = track.fadeOutTime ?? track.duration;
-    const totalDuration = track.duration || fadeOut || start || 1;
-    const playableWindow = Math.max(fadeOut - start, 0);
+    const end = track.endTime ?? track.duration;
+    const totalDuration = track.duration || end || start || 1;
+    const playableWindow = Math.max(end - start, 0);
 
     const isActive = track.id === activeTrackId;
     const isNext = !isActive && track.id === nextTrackId;
@@ -39,14 +39,14 @@ const TransitionTimeline: React.FC<TransitionTimelineProps> = ({
       : 0;
 
     const progressPosition = isActive
-      ? ((Math.min(activeTrackProgress, fadeOut) / totalDuration) * 100)
+      ? ((Math.min(activeTrackProgress, end) / totalDuration) * 100)
       : 0;
 
     const startPercent = (Math.min(start, totalDuration) / totalDuration) * 100;
-    const fadePercent = (Math.min(fadeOut, totalDuration) / totalDuration) * 100;
+    const endPercent = (Math.min(end, totalDuration) / totalDuration) * 100;
 
     const timeUntilFade = isActive
-      ? Math.max(fadeOut - activeTrackProgress, 0)
+      ? Math.max(end - activeTrackProgress, 0)
       : null;
 
     const roleLabel = isActive
@@ -78,7 +78,7 @@ const TransitionTimeline: React.FC<TransitionTimelineProps> = ({
         </div>
         <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
           <span>Start {formatDuration(start)}</span>
-          <span>Fade {formatDuration(fadeOut)}</span>
+          <span>End {formatDuration(end)}</span>
           <span>Total {formatDuration(track.duration)}</span>
           {deckLabel && (
             <span className="font-semibold text-primary">{deckLabel}</span>
@@ -89,12 +89,12 @@ const TransitionTimeline: React.FC<TransitionTimelineProps> = ({
             className="absolute inset-y-0 rounded-full bg-primary/30"
             style={{
               left: `${startPercent}%`,
-              width: `${Math.max(fadePercent - startPercent, 0)}%`,
+              width: `${Math.max(endPercent - startPercent, 0)}%`,
             }}
           />
           <div
             className="absolute inset-y-0 rounded-full bg-destructive/20"
-            style={{ left: `${fadePercent}%`, right: 0 }}
+            style={{ left: `${endPercent}%`, right: 0 }}
           />
           {isActive && (
             <div
